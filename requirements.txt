@@ -1,0 +1,5 @@
+keyboard>=0.13.5
+mss>=9.0.1
+numpy>=1.23
+opencv-python>=4.8
+pydirectinput>=1.0.4

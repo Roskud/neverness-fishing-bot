@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+.continue/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+Thumbs.db
+.DS_Store
+
+# Local screenshots / captures
+Снимок экрана*.png
+screenshot*.png
+debug*.png
+
+# Local continuation notes
+CONTINUE.md
