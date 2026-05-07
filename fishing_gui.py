@@ -24,6 +24,7 @@ from fishing_bot import (
     select_capture_region,
     tap,
     yellow_line_candidate_mask,
+    yellow_line_component_mask,
     yellow_line_center_x,
 )
 
@@ -1162,7 +1163,12 @@ class FishingBotGUI(tk.Tk):
             y2 = int(preview_state["strip_y2"])
             active = active_pick_var.get()
             if active == "line":
-                mask = yellow_line_candidate_mask(strip_bgr, strip_hsv, tolerance=yellow_tol_var.get())
+                mask = yellow_line_component_mask(
+                    strip_bgr,
+                    strip_hsv,
+                    tolerance=yellow_tol_var.get(),
+                    min_area=self.config.min_blob_area,
+                )
             else:
                 low, high = current_range(active)
                 mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))

@@ -284,6 +284,73 @@ def yellow_line_candidate_mask(bgr: np.ndarray, hsv: np.ndarray, tolerance: int 
     return mask
 
 
+def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
+    frame_height, frame_width = mask.shape[:2]
+    col_counts = np.count_nonzero(mask, axis=0)
+    min_col_pixels = max(5, min(frame_height - 1, frame_height // 4))
+    active_cols = np.where(col_counts >= min_col_pixels)[0]
+    result = np.zeros_like(mask)
+    if active_cols.size == 0:
+        return result
+
+    max_width = max(8, min(22, frame_height))
+    best = None
+    best_score = 0.0
+    start = int(active_cols[0])
+    prev = int(active_cols[0])
+    spans = []
+    for col in active_cols[1:]:
+        col = int(col)
+        if col <= prev + 2:
+            prev = col
+            continue
+        spans.append((start, prev))
+        start = col
+        prev = col
+    spans.append((start, prev))
+
+    for start, end in spans:
+        width = end - start + 1
+        if width > max_width:
+            continue
+        x1 = max(0, start - 2)
+        x2 = min(frame_width, end + 3)
+        component = mask[:, x1:x2]
+        ys, xs = np.where(component > 0)
+        if xs.size < max(5, min_area // 8):
+            continue
+        height = int(ys.max() - ys.min() + 1)
+        comp_width = int(xs.max() - xs.min() + 1)
+        if height < max(6, frame_height // 4):
+            continue
+        if comp_width > max_width:
+            continue
+        if height >= frame_height - 1 and comp_width > 6:
+            continue
+        area = int(xs.size)
+        score = area * (height / max(1, comp_width)) * min(2.0, height / max(1, frame_height * 0.45))
+        if score > best_score:
+            best_score = score
+            best = (x1, x2)
+
+    if best is None:
+        return result
+    x1, x2 = best
+    result[:, x1:x2] = mask[:, x1:x2]
+    result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+    return result
+
+
+def yellow_line_component_mask(
+    bgr: np.ndarray,
+    hsv: np.ndarray,
+    tolerance: int = 10,
+    min_area: int = 35,
+) -> np.ndarray:
+    raw_mask = yellow_line_candidate_mask(bgr, hsv, tolerance=tolerance)
+    return vertical_line_component_mask(raw_mask, min_area=min_area)
+
+
 def largest_blob_center_x(mask: np.ndarray, min_area: int) -> Optional[int]:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
@@ -489,11 +556,11 @@ def turquoise_indicator_center_x(
 
 def yellow_line_center_x(hsv: np.ndarray, min_area: int, bgr: Optional[np.ndarray] = None) -> Optional[int]:
     if bgr is not None:
-        mask = yellow_line_candidate_mask(bgr, hsv, tolerance=12)
+        mask = yellow_line_component_mask(bgr, hsv, tolerance=12, min_area=min_area)
     else:
         mask = cv2.inRange(hsv, np.array((14, 55, 105), dtype=np.uint8), np.array((48, 255, 255), dtype=np.uint8))
-    if bgr is None:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        mask = vertical_line_component_mask(mask, min_area=min_area)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     best = None
@@ -501,7 +568,7 @@ def yellow_line_center_x(hsv: np.ndarray, min_area: int, bgr: Optional[np.ndarra
     frame_height = hsv.shape[0]
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < max(5, min_area // 6):
+        if area < max(4, min_area // 10):
             continue
         x, _y, w, h = cv2.boundingRect(contour)
         if h < max(5, frame_height // 4):
@@ -861,7 +928,9 @@ def run_bot(
             line_mask_hsv = make_mask(
                 hsv, config.line_hsv_low, config.line_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
-            line_mask = cv2.bitwise_or(line_mask_hsv, yellow_line_candidate_mask(bgr, hsv, tolerance=12))
+            line_mask_shape = yellow_line_component_mask(bgr, hsv, tolerance=12, min_area=config.min_blob_area)
+            line_mask_hsv = vertical_line_component_mask(line_mask_hsv, min_area=config.min_blob_area)
+            line_mask = cv2.bitwise_or(line_mask_hsv, line_mask_shape)
             bar_mask = make_mask(
                 hsv, config.bar_hsv_low, config.bar_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
