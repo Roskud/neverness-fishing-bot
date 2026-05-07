@@ -1166,7 +1166,6 @@ class FishingBotGUI(tk.Tk):
                     strip_view[overlay_pixels].astype(np.float32) * 0.28 + red * 0.72
                 ).astype(np.uint8)
                 display[y1:y2, :, :] = strip_view
-                cv2.line(display, (int(center), y1), (int(center), y2 - 1), (255, 255, 255), 1)
 
             line_mask = cv2.inRange(
                 strip_hsv,
@@ -1180,10 +1179,6 @@ class FishingBotGUI(tk.Tk):
             )
             line_x = mask_center_x(line_mask)
             fish_x = mask_center_x(fish_mask)
-            if fish_x is not None:
-                cv2.line(display, (fish_x, y1), (fish_x, y2 - 1), (0, 255, 255), 2)
-            if line_x is not None:
-                cv2.line(display, (line_x, y1), (line_x, y2 - 1), (255, 255, 0), 2)
             cv2.rectangle(display, (0, y1), (display.shape[1] - 1, y2 - 1), (110, 110, 110), 1)
 
             self.calibration_preview_image = self.rgb_to_photo(display, max_width=680, max_height=320)
@@ -1274,7 +1269,10 @@ class FishingBotGUI(tk.Tk):
             is_line = active_pick_var.get() == "line"
             target_key = "line" if is_line else "fish"
             tolerance = yellow_tol_var.get() if is_line else green_tol_var.get()
-            sample = self.hsv_range_from_point(strip_hsv, source_x, strip_y, radius=4, tolerance=tolerance)
+            if is_line:
+                sample = self.hsv_range_from_yellow_line_point(strip_hsv, source_x, strip_y, tolerance=tolerance)
+            else:
+                sample = self.hsv_range_from_point(strip_hsv, source_x, strip_y, radius=4, tolerance=tolerance)
             if sample is None:
                 return
             low, high, median = sample
@@ -1567,6 +1565,52 @@ class FishingBotGUI(tk.Tk):
         h_pad = max(4, min(35, int(tolerance)))
         s_pad = max(25, min(170, int(tolerance) * 4 + int(round(spread[1]))))
         v_pad = max(25, min(180, int(tolerance) * 4 + int(round(spread[2]))))
+        low = (
+            max(0, h_med - h_pad),
+            max(0, s_med - s_pad),
+            max(0, v_med - v_pad),
+        )
+        high = (
+            min(179, h_med + h_pad),
+            min(255, s_med + s_pad),
+            min(255, v_med + v_pad),
+        )
+        return low, high, (h_med, s_med, v_med)
+
+    @staticmethod
+    def hsv_range_from_yellow_line_point(
+        hsv: np.ndarray,
+        x: int,
+        y: int,
+        tolerance: int,
+    ) -> Optional[tuple]:
+        h, w = hsv.shape[:2]
+        x1 = max(0, x - 10)
+        x2 = min(w, x + 11)
+        y1 = max(0, y - 18)
+        y2 = min(h, y + 19)
+        patch = hsv[y1:y2, x1:x2].reshape(-1, 3)
+        if patch.size == 0:
+            return None
+
+        yellow = patch[
+            (patch[:, 0] >= 12)
+            & (patch[:, 0] <= 50)
+            & (patch[:, 1] >= 70)
+            & (patch[:, 2] >= 105)
+        ]
+        if yellow.size < 9:
+            yellow = patch[(patch[:, 1] >= 105) & (patch[:, 2] >= 130)]
+        if yellow.size < 9:
+            return FishingBotGUI.hsv_range_from_point(hsv, x, y, radius=6, tolerance=tolerance)
+
+        median = np.median(yellow, axis=0)
+        spread = np.std(yellow, axis=0)
+        h_med, s_med, v_med = [int(round(value)) for value in median]
+        tolerance = max(1, int(tolerance))
+        h_pad = max(5, min(28, tolerance + int(round(spread[0]))))
+        s_pad = max(35, min(150, tolerance * 3 + int(round(spread[1]))))
+        v_pad = max(35, min(165, tolerance * 3 + int(round(spread[2]))))
         low = (
             max(0, h_med - h_pad),
             max(0, s_med - s_pad),
