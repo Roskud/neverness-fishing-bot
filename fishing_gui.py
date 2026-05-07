@@ -23,8 +23,6 @@ from fishing_bot import (
     save_config,
     select_capture_region,
     tap,
-    turquoise_indicator_center_x,
-    yellow_line_center_x,
 )
 
 
@@ -112,12 +110,18 @@ TRANSLATIONS = {
         "preview_invalid": "Неверная область",
         "preview_detection": "Цель: {fish} | Линия: {line}",
         "calibration_picker": "Выбор цвета по preview",
-        "calibration_pick_hint": "Выбери линию или цель и кликни по нужному месту в preview.",
+        "calibration_pick_hint": "Сделай снимок, выбери линию или цель, кликни пипеткой по цвету и двигай допуск. Красная маска показывает, что будет найдено.",
         "yellow": "Жёлтая линия",
         "green": "Бирюзовая цель",
         "yellow_tolerance": "Допуск линии",
         "green_tolerance": "Допуск цели",
         "test_match": "Проверить",
+        "recapture": "Снимок",
+        "sample_waiting": "Кликни по цвету на снимке",
+        "sample_info": "RGB={rgb} HSV={hsv}",
+        "range_info": "HSV {low}-{high}",
+        "mask_info": "{target}: маска {pixels} px, центр {center}",
+        "snapshot_saved": "Снимок калибровки обновлён: {region}.",
         "color_pick_saved": "{target}: цвет сохранён HSV={median}, диапазон {low}-{high}.",
         "apply_region": "Сохранить область",
         "calibration_saved": "Калибровка сохранена: {region}",
@@ -231,12 +235,18 @@ TRANSLATIONS = {
         "preview_invalid": "Invalid region",
         "preview_detection": "Target: {fish} | Line: {line}",
         "calibration_picker": "Pick Color From Preview",
-        "calibration_pick_hint": "Choose Yellow/Green and click the matching point in the preview.",
+        "calibration_pick_hint": "Capture a still image, choose line or target, click the color, then tune tolerance. The red mask shows what will be matched.",
         "yellow": "Yellow",
         "green": "Green",
         "yellow_tolerance": "Yellow tolerance",
         "green_tolerance": "Green tolerance",
         "test_match": "Test match",
+        "recapture": "Recapture",
+        "sample_waiting": "Click a color on the snapshot",
+        "sample_info": "RGB={rgb} HSV={hsv}",
+        "range_info": "HSV {low}-{high}",
+        "mask_info": "{target}: mask {pixels} px, center {center}",
+        "snapshot_saved": "Calibration snapshot updated: {region}.",
         "color_pick_saved": "{target}: color saved HSV={median}, range {low}-{high}.",
         "apply_region": "Save region",
         "calibration_saved": "Calibration saved: {region}",
@@ -350,12 +360,18 @@ TRANSLATIONS = {
         "preview_invalid": "区域无效",
         "preview_detection": "目标：{fish} | 线：{line}",
         "calibration_picker": "从预览取色",
-        "calibration_pick_hint": "选择黄线或青色目标，然后在预览中点击对应位置。",
+        "calibration_pick_hint": "先截图，再选择黄线或目标，点击颜色并调整容差。红色遮罩显示会匹配到的区域。",
         "yellow": "黄线",
         "green": "青色目标",
         "yellow_tolerance": "黄线容差",
         "green_tolerance": "目标容差",
         "test_match": "测试匹配",
+        "recapture": "重新截图",
+        "sample_waiting": "在截图上点击颜色",
+        "sample_info": "RGB={rgb} HSV={hsv}",
+        "range_info": "HSV {low}-{high}",
+        "mask_info": "{target}: 遮罩 {pixels} px，中心 {center}",
+        "snapshot_saved": "校准截图已更新：{region}。",
         "color_pick_saved": "{target}: 颜色已保存 HSV={median}, 范围 {low}-{high}。",
         "apply_region": "保存区域",
         "calibration_saved": "校准已保存：{region}",
@@ -897,8 +913,8 @@ class FishingBotGUI(tk.Tk):
         window = tk.Toplevel(self)
         self.calibration_window = window
         window.title(self.text("calibration_title"))
-        window.geometry("760x620")
-        window.minsize(620, 520)
+        window.geometry("980x660")
+        window.minsize(820, 560)
         window.transient(self)
         window.attributes("-topmost", True)
 
@@ -948,34 +964,66 @@ class FishingBotGUI(tk.Tk):
             ).grid(row=row, column=2, sticky="e", pady=2)
         sliders.columnconfigure(1, weight=1)
 
-        preview_label = ttk.Label(frame, text=self.text("preview_loading"), anchor="center")
-        preview_label.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        body = ttk.Frame(frame)
+        body.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        preview_area = ttk.Frame(body)
+        preview_area.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        preview_area.rowconfigure(0, weight=1)
+        preview_area.columnconfigure(0, weight=1)
+        preview_label = ttk.Label(preview_area, text=self.text("preview_loading"), anchor="center")
+        preview_label.grid(row=0, column=0, sticky="nsew")
         detection_var = tk.StringVar(value=self.text("preview_detection").format(fish="-", line="-"))
-        ttk.Label(frame, textvariable=detection_var).pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(preview_area, textvariable=detection_var).grid(row=1, column=0, sticky="ew", pady=(6, 0))
         preview_state = {
-            "hsv": None,
+            "canvas_rgb": None,
+            "strip_rgb": None,
+            "strip_hsv": None,
+            "strip_y1": 0,
+            "strip_y2": 0,
             "source_w": 1,
             "source_h": 1,
             "photo_w": 1,
             "photo_h": 1,
+            "line_median": None,
+            "line_rgb": None,
+            "fish_median": None,
+            "fish_rgb": None,
         }
 
-        picker = ttk.LabelFrame(frame, text=self.text("calibration_picker"), padding=8)
-        picker.pack(fill=tk.X, pady=(10, 0))
-        ttk.Label(picker, text=self.text("calibration_pick_hint"), wraplength=670).grid(
-            row=0, column=0, columnspan=4, sticky="w"
+        picker = ttk.LabelFrame(body, text=self.text("calibration_picker"), padding=8)
+        picker.grid(row=0, column=1, sticky="ns")
+        ttk.Label(picker, text=self.text("calibration_pick_hint"), wraplength=260).grid(
+            row=0, column=0, columnspan=3, sticky="w"
         )
         active_pick_var = tk.StringVar(value="line")
-        yellow_tol_var = tk.IntVar(value=18)
-        green_tol_var = tk.IntVar(value=29)
-        ttk.Radiobutton(picker, text=self.text("yellow"), variable=active_pick_var, value="line").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
+        line_h_span = (int(self.config.line_hsv_high[0]) - int(self.config.line_hsv_low[0])) // 2
+        fish_h_span = (int(self.config.fish_hsv_high[0]) - int(self.config.fish_hsv_low[0])) // 2
+        yellow_tol_var = tk.IntVar(value=max(4, min(50, line_h_span or 18)))
+        green_tol_var = tk.IntVar(value=max(4, min(60, fish_h_span or 29)))
+        capture_info_var = tk.StringVar(value="")
+        yellow_info_var = tk.StringVar(value=self.text("sample_waiting"))
+        green_info_var = tk.StringVar(value=self.text("sample_waiting"))
+
+        ttk.Button(picker, text=self.text("recapture"), command=lambda: capture_snapshot(log=True)).grid(
+            row=1, column=2, sticky="e", pady=(8, 8)
         )
-        ttk.Radiobutton(picker, text=self.text("green"), variable=active_pick_var, value="fish").grid(
-            row=2, column=0, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(picker, text=self.text("yellow_tolerance")).grid(row=1, column=1, sticky="w", pady=(6, 0))
-        tk.Scale(
+        ttk.Label(picker, textvariable=capture_info_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 8))
+
+        yellow_chip = tk.Label(picker, width=3, height=1, background="#f2d65b")
+        yellow_chip.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Radiobutton(
+            picker,
+            text=self.text("yellow"),
+            variable=active_pick_var,
+            value="line",
+            command=lambda: render_snapshot(),
+        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(picker, textvariable=yellow_info_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ttk.Label(picker, text=self.text("yellow_tolerance")).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        yellow_scale = tk.Scale(
             picker,
             from_=4,
             to=50,
@@ -983,17 +1031,34 @@ class FishingBotGUI(tk.Tk):
             showvalue=True,
             variable=yellow_tol_var,
             resolution=1,
-        ).grid(row=1, column=2, sticky="ew", padx=(8, 12), pady=(6, 0))
-        ttk.Label(picker, text=self.text("green_tolerance")).grid(row=2, column=1, sticky="w", pady=(4, 0))
-        tk.Scale(
+        )
+        yellow_scale.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+
+        green_chip = tk.Label(picker, width=3, height=1, background="#36ddbd")
+        green_chip.grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Radiobutton(
+            picker,
+            text=self.text("green"),
+            variable=active_pick_var,
+            value="fish",
+            command=lambda: render_snapshot(),
+        ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(picker, textvariable=green_info_var).grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ttk.Label(picker, text=self.text("green_tolerance")).grid(row=8, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        green_scale = tk.Scale(
             picker,
             from_=4,
-            to=60,
+            to=100,
             orient=tk.HORIZONTAL,
             showvalue=True,
             variable=green_tol_var,
             resolution=1,
-        ).grid(row=2, column=2, sticky="ew", padx=(8, 12), pady=(4, 0))
+        )
+        green_scale.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        ttk.Button(picker, text=self.text("test_match"), command=lambda: render_snapshot()).grid(
+            row=10, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        picker.columnconfigure(1, weight=1)
         picker.columnconfigure(2, weight=1)
 
         buttons = ttk.Frame(frame)
@@ -1008,14 +1073,16 @@ class FishingBotGUI(tk.Tk):
             }
             return self.clamp_region(raw_region, monitor)
 
-        def apply_region() -> None:
+        def apply_region(log: bool = True) -> dict:
             selected = current_region()
             for key, value in selected.items():
                 vars_by_key[key].set(value)
             self.config.capture_region = selected
             self.region_var.set(self.format_region(selected))
             save_config(self.config_path, self.config)
-            self.append_log(self.text("calibration_saved").format(region=self.format_region(selected)))
+            if log:
+                self.append_log(self.text("calibration_saved").format(region=self.format_region(selected)))
+            return selected
 
         def close_window() -> None:
             try:
@@ -1025,20 +1092,166 @@ class FishingBotGUI(tk.Tk):
             self.calibration_window = None
             window.destroy()
 
+        def current_range(target: str) -> tuple:
+            if target == "line":
+                return self.config.line_hsv_low, self.config.line_hsv_high
+            return self.config.fish_hsv_low, self.config.fish_hsv_high
+
+        def set_target_range(target: str, low: tuple, high: tuple) -> None:
+            if target == "line":
+                self.config.line_hsv_low = low
+                self.config.line_hsv_high = high
+            else:
+                self.config.fish_hsv_low = low
+                self.config.fish_hsv_high = high
+                self.config.use_template_matching = False
+                self.template_enabled_var.set(False)
+
+        def mask_center_x(mask: np.ndarray) -> Optional[int]:
+            ys, xs = np.where(mask > 0)
+            if xs.size == 0:
+                return None
+            return int(round(float(xs.mean())))
+
+        def rgb_hex(rgb: tuple) -> str:
+            return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, int(value))) for value in rgb))
+
+        def update_sample_labels() -> None:
+            for target, info_var, chip in (
+                ("line", yellow_info_var, yellow_chip),
+                ("fish", green_info_var, green_chip),
+            ):
+                low, high = current_range(target)
+                rgb = preview_state.get(f"{target}_rgb")
+                median = preview_state.get(f"{target}_median")
+                if rgb is not None and median is not None:
+                    info_var.set(self.text("sample_info").format(rgb=rgb, hsv=median))
+                    chip.configure(background=rgb_hex(rgb))
+                else:
+                    info_var.set(self.text("range_info").format(low=low, high=high))
+
+        def update_range_from_tolerance(target: str, save: bool = True) -> None:
+            median = preview_state.get(f"{target}_median")
+            if median is None:
+                return
+            tolerance = yellow_tol_var.get() if target == "line" else green_tol_var.get()
+            low, high = self.hsv_range_from_median(median, tolerance)
+            set_target_range(target, low, high)
+            if save:
+                save_config(self.config_path, self.config)
+            self.fish_hsv_var.set(self.format_fish_hsv())
+            update_sample_labels()
+
+        def render_snapshot() -> None:
+            canvas = preview_state.get("canvas_rgb")
+            strip_hsv = preview_state.get("strip_hsv")
+            if canvas is None or strip_hsv is None:
+                preview_label.configure(image="", text=self.text("preview_loading"))
+                detection_var.set(self.text("preview_detection").format(fish="-", line="-"))
+                return
+
+            display = canvas.copy()
+            y1 = int(preview_state["strip_y1"])
+            y2 = int(preview_state["strip_y2"])
+            active = active_pick_var.get()
+            low, high = current_range(active)
+            mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
+            pixels = int(np.count_nonzero(mask))
+            center = mask_center_x(mask)
+            if pixels:
+                strip_view = display[y1:y2, :, :]
+                overlay_pixels = mask > 0
+                red = np.array((255, 0, 0), dtype=np.float32)
+                strip_view[overlay_pixels] = (
+                    strip_view[overlay_pixels].astype(np.float32) * 0.28 + red * 0.72
+                ).astype(np.uint8)
+                display[y1:y2, :, :] = strip_view
+                cv2.line(display, (int(center), y1), (int(center), y2 - 1), (255, 255, 255), 1)
+
+            line_mask = cv2.inRange(
+                strip_hsv,
+                np.array(self.config.line_hsv_low, dtype=np.uint8),
+                np.array(self.config.line_hsv_high, dtype=np.uint8),
+            )
+            fish_mask = cv2.inRange(
+                strip_hsv,
+                np.array(self.config.fish_hsv_low, dtype=np.uint8),
+                np.array(self.config.fish_hsv_high, dtype=np.uint8),
+            )
+            line_x = mask_center_x(line_mask)
+            fish_x = mask_center_x(fish_mask)
+            if fish_x is not None:
+                cv2.line(display, (fish_x, y1), (fish_x, y2 - 1), (0, 255, 255), 2)
+            if line_x is not None:
+                cv2.line(display, (line_x, y1), (line_x, y2 - 1), (255, 255, 0), 2)
+            cv2.rectangle(display, (0, y1), (display.shape[1] - 1, y2 - 1), (110, 110, 110), 1)
+
+            self.calibration_preview_image = self.rgb_to_photo(display, max_width=680, max_height=320)
+            preview_state["source_w"] = display.shape[1]
+            preview_state["source_h"] = display.shape[0]
+            preview_state["photo_w"] = self.calibration_preview_image.width()
+            preview_state["photo_h"] = self.calibration_preview_image.height()
+            preview_label.configure(image=self.calibration_preview_image, text="")
+            detection_var.set(
+                self.text("preview_detection").format(
+                    fish="-" if fish_x is None else int(fish_x),
+                    line="-" if line_x is None else int(line_x),
+                )
+                + " | "
+                + self.text("mask_info").format(
+                    target=self.text("yellow") if active == "line" else self.text("green"),
+                    pixels=pixels,
+                    center="-" if center is None else int(center),
+                )
+            )
+
+        def capture_snapshot(log: bool = False) -> None:
+            try:
+                selected = apply_region(log=False)
+                shot = np.array(sct.grab(selected))
+                strip_rgb = cv2.cvtColor(shot, cv2.COLOR_BGRA2RGB)
+                strip_bgr = cv2.cvtColor(strip_rgb, cv2.COLOR_RGB2BGR)
+                strip_hsv = cv2.cvtColor(strip_bgr, cv2.COLOR_BGR2HSV)
+                strip_hsv = enhance_hsv(strip_hsv, self.config.enable_clahe)
+                strip_h, strip_w = strip_rgb.shape[:2]
+                canvas_h = max(180, min(360, strip_h + 140))
+                canvas = np.zeros((canvas_h, strip_w, 3), dtype=np.uint8)
+                y1 = max(0, (canvas_h - strip_h) // 2)
+                y2 = y1 + strip_h
+                canvas[y1:y2, :, :] = strip_rgb
+                preview_state["canvas_rgb"] = canvas
+                preview_state["strip_rgb"] = strip_rgb
+                preview_state["strip_hsv"] = strip_hsv
+                preview_state["strip_y1"] = y1
+                preview_state["strip_y2"] = y2
+                capture_info_var.set(f"{selected['left']},{selected['top']}  {selected['width']}x{selected['height']}")
+                update_sample_labels()
+                render_snapshot()
+                if log:
+                    self.append_log(self.text("snapshot_saved").format(region=self.format_region(selected)))
+            except Exception:
+                preview_label.configure(image="", text=self.text("preview_invalid"))
+                detection_var.set(self.text("preview_detection").format(fish="-", line="-"))
+
+        def on_tolerance_changed(target: str) -> None:
+            update_range_from_tolerance(target)
+            render_snapshot()
+
         ttk.Button(
             buttons,
             text=self.text("auto_calibrate"),
-            command=lambda: (apply_region(), self.auto_calibrate_colors_from_region()),
+            command=lambda: (apply_region(), self.auto_calibrate_colors_from_region(), capture_snapshot(log=False)),
         ).pack(side=tk.RIGHT)
         ttk.Button(buttons, text=self.text("apply_region"), command=apply_region).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(buttons, text=self.text("test_match"), command=lambda: update_preview()).pack(
+        ttk.Button(buttons, text=self.text("recapture"), command=lambda: capture_snapshot(log=True)).pack(
             side=tk.RIGHT, padx=(0, 8)
         )
         ttk.Button(buttons, text=self.text("close"), command=close_window).pack(side=tk.RIGHT, padx=(0, 8))
 
         def pick_color_from_preview(event: tk.Event) -> None:
-            hsv = preview_state.get("hsv")
-            if hsv is None:
+            strip_hsv = preview_state.get("strip_hsv")
+            strip_rgb = preview_state.get("strip_rgb")
+            if strip_hsv is None or strip_rgb is None:
                 return
             photo_w = max(1, int(preview_state["photo_w"]))
             photo_h = max(1, int(preview_state["photo_h"]))
@@ -1052,105 +1265,36 @@ class FishingBotGUI(tk.Tk):
                 return
             source_x = int(round(px * int(preview_state["source_w"]) / photo_w))
             source_y = int(round(py * int(preview_state["source_h"]) / photo_h))
-            source_x = max(0, min(hsv.shape[1] - 1, source_x))
-            source_y = max(0, min(hsv.shape[0] - 1, source_y))
+            source_x = max(0, min(strip_hsv.shape[1] - 1, source_x))
+            strip_y = source_y - int(preview_state["strip_y1"])
+            if strip_y < 0 or strip_y >= strip_hsv.shape[0]:
+                return
+            strip_y = max(0, min(strip_hsv.shape[0] - 1, strip_y))
 
             is_line = active_pick_var.get() == "line"
+            target_key = "line" if is_line else "fish"
             tolerance = yellow_tol_var.get() if is_line else green_tol_var.get()
-            sample = self.hsv_range_from_point(hsv, source_x, source_y, radius=4, tolerance=tolerance)
+            sample = self.hsv_range_from_point(strip_hsv, source_x, strip_y, radius=4, tolerance=tolerance)
             if sample is None:
                 return
             low, high, median = sample
-            if is_line:
-                self.config.line_hsv_low = low
-                self.config.line_hsv_high = high
-                target = self.text("yellow")
-            else:
-                self.config.fish_hsv_low = low
-                self.config.fish_hsv_high = high
-                self.config.use_template_matching = False
-                self.template_enabled_var.set(False)
-                target = self.text("green")
+            rgb = tuple(int(value) for value in strip_rgb[strip_y, source_x])
+            preview_state[f"{target_key}_median"] = median
+            preview_state[f"{target_key}_rgb"] = rgb
+            set_target_range(target_key, low, high)
+            target = self.text("yellow") if is_line else self.text("green")
             save_config(self.config_path, self.config)
             self.fish_hsv_var.set(self.format_fish_hsv())
+            update_sample_labels()
             self.append_log(self.text("color_pick_saved").format(target=target, median=median, low=low, high=high))
-            update_preview()
+            render_snapshot()
 
         preview_label.bind("<Button-1>", pick_color_from_preview)
-
-        def update_preview() -> None:
-            if self.calibration_window is None or not window.winfo_exists():
-                return
-            try:
-                selected = current_region()
-                pad = 130
-                grab_left = max(mon_left, selected["left"] - pad)
-                grab_top = max(mon_top, selected["top"] - pad)
-                grab_right = min(mon_right, selected["left"] + selected["width"] + pad)
-                grab_bottom = min(mon_bottom, selected["top"] + selected["height"] + pad)
-                grab_region = {
-                    "left": grab_left,
-                    "top": grab_top,
-                    "width": max(2, grab_right - grab_left),
-                    "height": max(2, grab_bottom - grab_top),
-                }
-
-                shot = np.array(sct.grab(grab_region))
-                rgb = cv2.cvtColor(shot, cv2.COLOR_BGRA2RGB)
-                composite = (rgb * 0.42).astype(np.uint8)
-                inner_x1 = selected["left"] - grab_left
-                inner_y1 = selected["top"] - grab_top
-                inner_x2 = inner_x1 + selected["width"]
-                inner_y2 = inner_y1 + selected["height"]
-                composite[inner_y1:inner_y2, inner_x1:inner_x2] = rgb[inner_y1:inner_y2, inner_x1:inner_x2]
-                cv2.rectangle(composite, (inner_x1, inner_y1), (inner_x2, inner_y2), (0, 255, 0), 2)
-                center_x = inner_x1 + selected["width"] // 2
-                cv2.line(composite, (center_x, inner_y1), (center_x, inner_y2), (255, 255, 255), 1)
-
-                target_rgb = rgb[inner_y1:inner_y2, inner_x1:inner_x2]
-                fish_x = None
-                line_x = None
-                if target_rgb.size:
-                    target_bgr = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2BGR)
-                    hsv = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2HSV)
-                    hsv = enhance_hsv(hsv, self.config.enable_clahe)
-                    fish_x = turquoise_indicator_center_x(
-                        hsv,
-                        self.config.min_blob_area,
-                        self.config.fish_hsv_low,
-                        self.config.fish_hsv_high,
-                    )
-                    line_x = yellow_line_center_x(hsv, self.config.min_blob_area)
-                if fish_x is not None:
-                    x = inner_x1 + int(fish_x)
-                    cv2.line(composite, (x, inner_y1), (x, inner_y2), (0, 255, 255), 2)
-                if line_x is not None:
-                    x = inner_x1 + int(line_x)
-                    cv2.line(composite, (x, inner_y1), (x, inner_y2), (255, 255, 0), 2)
-
-                grab_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                grab_hsv = cv2.cvtColor(grab_bgr, cv2.COLOR_BGR2HSV)
-                preview_state["hsv"] = enhance_hsv(grab_hsv, self.config.enable_clahe)
-                preview_state["source_w"] = composite.shape[1]
-                preview_state["source_h"] = composite.shape[0]
-
-                self.calibration_preview_image = self.rgb_to_photo(composite, max_width=700, max_height=320)
-                preview_state["photo_w"] = self.calibration_preview_image.width()
-                preview_state["photo_h"] = self.calibration_preview_image.height()
-                preview_label.configure(image=self.calibration_preview_image, text="")
-                detection_var.set(
-                    self.text("preview_detection").format(
-                        fish="-" if fish_x is None else int(fish_x),
-                        line="-" if line_x is None else int(line_x),
-                    )
-                )
-            except Exception:
-                preview_label.configure(image="", text=self.text("preview_invalid"))
-                detection_var.set(self.text("preview_detection").format(fish="-", line="-"))
-            window.after(120, update_preview)
+        yellow_scale.configure(command=lambda _value: on_tolerance_changed("line"))
+        green_scale.configure(command=lambda _value: on_tolerance_changed("fish"))
 
         window.protocol("WM_DELETE_WINDOW", close_window)
-        update_preview()
+        capture_snapshot(log=False)
 
     def choose_click_position(self) -> None:
         if self.worker is not None and self.worker.is_alive():
@@ -1378,6 +1522,25 @@ class FishingBotGUI(tk.Tk):
         return low, high
 
     @staticmethod
+    def hsv_range_from_median(median: tuple, tolerance: int) -> tuple:
+        h_med, s_med, v_med = [int(round(value)) for value in median]
+        tolerance = max(1, int(tolerance))
+        h_pad = max(4, min(35, tolerance))
+        s_pad = max(25, min(170, tolerance * 4))
+        v_pad = max(25, min(180, tolerance * 4))
+        low = (
+            max(0, h_med - h_pad),
+            max(0, s_med - s_pad),
+            max(0, v_med - v_pad),
+        )
+        high = (
+            min(179, h_med + h_pad),
+            min(255, s_med + s_pad),
+            min(255, v_med + v_pad),
+        )
+        return low, high
+
+    @staticmethod
     def hsv_range_from_point(
         hsv: np.ndarray,
         x: int,
@@ -1401,10 +1564,9 @@ class FishingBotGUI(tk.Tk):
         median = np.median(patch, axis=0)
         spread = np.std(patch, axis=0)
         h_med, s_med, v_med = [int(round(value)) for value in median]
-        tolerance = max(1, int(tolerance))
-        h_pad = max(4, min(30, tolerance))
-        s_pad = max(25, min(140, tolerance * 4 + int(round(spread[1]))))
-        v_pad = max(25, min(150, tolerance * 4 + int(round(spread[2]))))
+        h_pad = max(4, min(35, int(tolerance)))
+        s_pad = max(25, min(170, int(tolerance) * 4 + int(round(spread[1]))))
+        v_pad = max(25, min(180, int(tolerance) * 4 + int(round(spread[2]))))
         low = (
             max(0, h_med - h_pad),
             max(0, s_med - s_pad),
