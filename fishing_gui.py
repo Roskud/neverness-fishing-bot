@@ -111,6 +111,14 @@ TRANSLATIONS = {
         "preview_loading": "Загрузка preview...",
         "preview_invalid": "Неверная область",
         "preview_detection": "Цель: {fish} | Линия: {line}",
+        "calibration_picker": "Выбор цвета по preview",
+        "calibration_pick_hint": "Выбери линию или цель и кликни по нужному месту в preview.",
+        "yellow": "Жёлтая линия",
+        "green": "Бирюзовая цель",
+        "yellow_tolerance": "Допуск линии",
+        "green_tolerance": "Допуск цели",
+        "test_match": "Проверить",
+        "color_pick_saved": "{target}: цвет сохранён HSV={median}, диапазон {low}-{high}.",
         "apply_region": "Сохранить область",
         "calibration_saved": "Калибровка сохранена: {region}",
         "auto_calibrate": "Автонастройка",
@@ -222,6 +230,14 @@ TRANSLATIONS = {
         "preview_loading": "Loading preview...",
         "preview_invalid": "Invalid region",
         "preview_detection": "Target: {fish} | Line: {line}",
+        "calibration_picker": "Pick Color From Preview",
+        "calibration_pick_hint": "Choose Yellow/Green and click the matching point in the preview.",
+        "yellow": "Yellow",
+        "green": "Green",
+        "yellow_tolerance": "Yellow tolerance",
+        "green_tolerance": "Green tolerance",
+        "test_match": "Test match",
+        "color_pick_saved": "{target}: color saved HSV={median}, range {low}-{high}.",
         "apply_region": "Save region",
         "calibration_saved": "Calibration saved: {region}",
         "auto_calibrate": "Auto setup",
@@ -333,6 +349,14 @@ TRANSLATIONS = {
         "preview_loading": "正在加载预览...",
         "preview_invalid": "区域无效",
         "preview_detection": "目标：{fish} | 线：{line}",
+        "calibration_picker": "从预览取色",
+        "calibration_pick_hint": "选择黄线或青色目标，然后在预览中点击对应位置。",
+        "yellow": "黄线",
+        "green": "青色目标",
+        "yellow_tolerance": "黄线容差",
+        "green_tolerance": "目标容差",
+        "test_match": "测试匹配",
+        "color_pick_saved": "{target}: 颜色已保存 HSV={median}, 范围 {low}-{high}。",
         "apply_region": "保存区域",
         "calibration_saved": "校准已保存：{region}",
         "auto_calibrate": "自动设置",
@@ -928,6 +952,49 @@ class FishingBotGUI(tk.Tk):
         preview_label.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
         detection_var = tk.StringVar(value=self.text("preview_detection").format(fish="-", line="-"))
         ttk.Label(frame, textvariable=detection_var).pack(fill=tk.X, pady=(6, 0))
+        preview_state = {
+            "hsv": None,
+            "source_w": 1,
+            "source_h": 1,
+            "photo_w": 1,
+            "photo_h": 1,
+        }
+
+        picker = ttk.LabelFrame(frame, text=self.text("calibration_picker"), padding=8)
+        picker.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(picker, text=self.text("calibration_pick_hint"), wraplength=670).grid(
+            row=0, column=0, columnspan=4, sticky="w"
+        )
+        active_pick_var = tk.StringVar(value="line")
+        yellow_tol_var = tk.IntVar(value=18)
+        green_tol_var = tk.IntVar(value=29)
+        ttk.Radiobutton(picker, text=self.text("yellow"), variable=active_pick_var, value="line").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Radiobutton(picker, text=self.text("green"), variable=active_pick_var, value="fish").grid(
+            row=2, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(picker, text=self.text("yellow_tolerance")).grid(row=1, column=1, sticky="w", pady=(6, 0))
+        tk.Scale(
+            picker,
+            from_=4,
+            to=50,
+            orient=tk.HORIZONTAL,
+            showvalue=True,
+            variable=yellow_tol_var,
+            resolution=1,
+        ).grid(row=1, column=2, sticky="ew", padx=(8, 12), pady=(6, 0))
+        ttk.Label(picker, text=self.text("green_tolerance")).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        tk.Scale(
+            picker,
+            from_=4,
+            to=60,
+            orient=tk.HORIZONTAL,
+            showvalue=True,
+            variable=green_tol_var,
+            resolution=1,
+        ).grid(row=2, column=2, sticky="ew", padx=(8, 12), pady=(4, 0))
+        picker.columnconfigure(2, weight=1)
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill=tk.X, pady=(10, 0))
@@ -964,7 +1031,52 @@ class FishingBotGUI(tk.Tk):
             command=lambda: (apply_region(), self.auto_calibrate_colors_from_region()),
         ).pack(side=tk.RIGHT)
         ttk.Button(buttons, text=self.text("apply_region"), command=apply_region).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(buttons, text=self.text("test_match"), command=lambda: update_preview()).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
         ttk.Button(buttons, text=self.text("close"), command=close_window).pack(side=tk.RIGHT, padx=(0, 8))
+
+        def pick_color_from_preview(event: tk.Event) -> None:
+            hsv = preview_state.get("hsv")
+            if hsv is None:
+                return
+            photo_w = max(1, int(preview_state["photo_w"]))
+            photo_h = max(1, int(preview_state["photo_h"]))
+            label_w = max(photo_w, preview_label.winfo_width())
+            label_h = max(photo_h, preview_label.winfo_height())
+            offset_x = max(0, (label_w - photo_w) // 2)
+            offset_y = max(0, (label_h - photo_h) // 2)
+            px = event.x - offset_x
+            py = event.y - offset_y
+            if px < 0 or py < 0 or px >= photo_w or py >= photo_h:
+                return
+            source_x = int(round(px * int(preview_state["source_w"]) / photo_w))
+            source_y = int(round(py * int(preview_state["source_h"]) / photo_h))
+            source_x = max(0, min(hsv.shape[1] - 1, source_x))
+            source_y = max(0, min(hsv.shape[0] - 1, source_y))
+
+            is_line = active_pick_var.get() == "line"
+            tolerance = yellow_tol_var.get() if is_line else green_tol_var.get()
+            sample = self.hsv_range_from_point(hsv, source_x, source_y, radius=4, tolerance=tolerance)
+            if sample is None:
+                return
+            low, high, median = sample
+            if is_line:
+                self.config.line_hsv_low = low
+                self.config.line_hsv_high = high
+                target = self.text("yellow")
+            else:
+                self.config.fish_hsv_low = low
+                self.config.fish_hsv_high = high
+                self.config.use_template_matching = False
+                self.template_enabled_var.set(False)
+                target = self.text("green")
+            save_config(self.config_path, self.config)
+            self.fish_hsv_var.set(self.format_fish_hsv())
+            self.append_log(self.text("color_pick_saved").format(target=target, median=median, low=low, high=high))
+            update_preview()
+
+        preview_label.bind("<Button-1>", pick_color_from_preview)
 
         def update_preview() -> None:
             if self.calibration_window is None or not window.winfo_exists():
@@ -1016,7 +1128,15 @@ class FishingBotGUI(tk.Tk):
                     x = inner_x1 + int(line_x)
                     cv2.line(composite, (x, inner_y1), (x, inner_y2), (255, 255, 0), 2)
 
+                grab_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                grab_hsv = cv2.cvtColor(grab_bgr, cv2.COLOR_BGR2HSV)
+                preview_state["hsv"] = enhance_hsv(grab_hsv, self.config.enable_clahe)
+                preview_state["source_w"] = composite.shape[1]
+                preview_state["source_h"] = composite.shape[0]
+
                 self.calibration_preview_image = self.rgb_to_photo(composite, max_width=700, max_height=320)
+                preview_state["photo_w"] = self.calibration_preview_image.width()
+                preview_state["photo_h"] = self.calibration_preview_image.height()
                 preview_label.configure(image=self.calibration_preview_image, text="")
                 detection_var.set(
                     self.text("preview_detection").format(
@@ -1256,6 +1376,46 @@ class FishingBotGUI(tk.Tk):
             min(255, int(round(p_high[2])) + v_high_pad),
         )
         return low, high
+
+    @staticmethod
+    def hsv_range_from_point(
+        hsv: np.ndarray,
+        x: int,
+        y: int,
+        radius: int,
+        tolerance: int,
+    ) -> Optional[tuple]:
+        h, w = hsv.shape[:2]
+        x1 = max(0, x - radius)
+        x2 = min(w, x + radius + 1)
+        y1 = max(0, y - radius)
+        y2 = min(h, y + radius + 1)
+        patch = hsv[y1:y2, x1:x2].reshape(-1, 3)
+        if patch.size == 0:
+            return None
+
+        vivid = patch[(patch[:, 1] >= 35) & (patch[:, 2] >= 35)]
+        if vivid.size >= 9:
+            patch = vivid
+
+        median = np.median(patch, axis=0)
+        spread = np.std(patch, axis=0)
+        h_med, s_med, v_med = [int(round(value)) for value in median]
+        tolerance = max(1, int(tolerance))
+        h_pad = max(4, min(30, tolerance))
+        s_pad = max(25, min(140, tolerance * 4 + int(round(spread[1]))))
+        v_pad = max(25, min(150, tolerance * 4 + int(round(spread[2]))))
+        low = (
+            max(0, h_med - h_pad),
+            max(0, s_med - s_pad),
+            max(0, v_med - v_pad),
+        )
+        high = (
+            min(179, h_med + h_pad),
+            min(255, s_med + s_pad),
+            min(255, v_med + v_pad),
+        )
+        return low, high, (h_med, s_med, v_med)
 
     @staticmethod
     def rgb_to_photo(rgb: np.ndarray, max_width: int, max_height: int) -> tk.PhotoImage:

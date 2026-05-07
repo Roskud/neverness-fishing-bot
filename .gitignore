@@ -1,6 +1,10 @@
 .venv/
+.build-venv/
 __pycache__/
 .continue/
+build/
+dist/
+*.spec
 *.pyc
 *.pyo
 *.log
@@ -16,3 +20,6 @@ debug*.png
 
 # Local continuation notes
 CONTINUE.md
+
+# Local third-party programs
+программа/
