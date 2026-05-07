@@ -287,7 +287,7 @@ def yellow_line_candidate_mask(bgr: np.ndarray, hsv: np.ndarray, tolerance: int 
 def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
     frame_height, frame_width = mask.shape[:2]
     col_counts = np.count_nonzero(mask, axis=0)
-    min_col_pixels = max(5, min(frame_height - 1, frame_height // 4))
+    min_col_pixels = max(3, min(frame_height - 1, frame_height // 4))
     active_cols = np.where(col_counts >= min_col_pixels)[0]
     result = np.zeros_like(mask)
     if active_cols.size == 0:
@@ -325,7 +325,8 @@ def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
             continue
         if comp_width > max_width:
             continue
-        if height >= frame_height - 1 and comp_width > 6:
+        full_height_width_limit = max(14, int(frame_height * 0.8))
+        if height >= frame_height - 1 and comp_width > full_height_width_limit:
             continue
         area = int(xs.size)
         score = area * (height / max(1, comp_width)) * min(2.0, height / max(1, frame_height * 0.45))
@@ -575,7 +576,8 @@ def yellow_line_center_x(hsv: np.ndarray, min_area: int, bgr: Optional[np.ndarra
             continue
         if w > max(18, frame_height):
             continue
-        if h >= frame_height - 1:
+        full_height_width_limit = max(14, int(frame_height * 0.8))
+        if h >= frame_height - 1 and w > full_height_width_limit:
             continue
         score = area * (h / max(1, w)) * min(2.0, h / max(1, frame_height * 0.45))
         if score > best_score:
