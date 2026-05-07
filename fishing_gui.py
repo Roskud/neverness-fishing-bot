@@ -23,6 +23,8 @@ from fishing_bot import (
     save_config,
     select_capture_region,
     tap,
+    yellow_line_candidate_mask,
+    yellow_line_center_x,
 )
 
 
@@ -980,6 +982,7 @@ class FishingBotGUI(tk.Tk):
         preview_state = {
             "canvas_rgb": None,
             "strip_rgb": None,
+            "strip_bgr": None,
             "strip_hsv": None,
             "strip_y1": 0,
             "strip_y2": 0,
@@ -1135,7 +1138,10 @@ class FishingBotGUI(tk.Tk):
             if median is None:
                 return
             tolerance = yellow_tol_var.get() if target == "line" else green_tol_var.get()
-            low, high = self.hsv_range_from_median(median, tolerance)
+            if target == "line":
+                low, high = self.hsv_yellow_range_from_median(median, tolerance)
+            else:
+                low, high = self.hsv_range_from_median(median, tolerance)
             set_target_range(target, low, high)
             if save:
                 save_config(self.config_path, self.config)
@@ -1144,8 +1150,9 @@ class FishingBotGUI(tk.Tk):
 
         def render_snapshot() -> None:
             canvas = preview_state.get("canvas_rgb")
+            strip_bgr = preview_state.get("strip_bgr")
             strip_hsv = preview_state.get("strip_hsv")
-            if canvas is None or strip_hsv is None:
+            if canvas is None or strip_bgr is None or strip_hsv is None:
                 preview_label.configure(image="", text=self.text("preview_loading"))
                 detection_var.set(self.text("preview_detection").format(fish="-", line="-"))
                 return
@@ -1154,8 +1161,11 @@ class FishingBotGUI(tk.Tk):
             y1 = int(preview_state["strip_y1"])
             y2 = int(preview_state["strip_y2"])
             active = active_pick_var.get()
-            low, high = current_range(active)
-            mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
+            if active == "line":
+                mask = yellow_line_candidate_mask(strip_bgr, strip_hsv, tolerance=yellow_tol_var.get())
+            else:
+                low, high = current_range(active)
+                mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
             pixels = int(np.count_nonzero(mask))
             center = mask_center_x(mask)
             if pixels:
@@ -1167,17 +1177,12 @@ class FishingBotGUI(tk.Tk):
                 ).astype(np.uint8)
                 display[y1:y2, :, :] = strip_view
 
-            line_mask = cv2.inRange(
-                strip_hsv,
-                np.array(self.config.line_hsv_low, dtype=np.uint8),
-                np.array(self.config.line_hsv_high, dtype=np.uint8),
-            )
             fish_mask = cv2.inRange(
                 strip_hsv,
                 np.array(self.config.fish_hsv_low, dtype=np.uint8),
                 np.array(self.config.fish_hsv_high, dtype=np.uint8),
             )
-            line_x = mask_center_x(line_mask)
+            line_x = yellow_line_center_x(strip_hsv, self.config.min_blob_area, strip_bgr)
             fish_x = mask_center_x(fish_mask)
             cv2.rectangle(display, (0, y1), (display.shape[1] - 1, y2 - 1), (110, 110, 110), 1)
 
@@ -1216,6 +1221,7 @@ class FishingBotGUI(tk.Tk):
                 canvas[y1:y2, :, :] = strip_rgb
                 preview_state["canvas_rgb"] = canvas
                 preview_state["strip_rgb"] = strip_rgb
+                preview_state["strip_bgr"] = strip_bgr
                 preview_state["strip_hsv"] = strip_hsv
                 preview_state["strip_y1"] = y1
                 preview_state["strip_y2"] = y2
@@ -1279,6 +1285,8 @@ class FishingBotGUI(tk.Tk):
             rgb = tuple(int(value) for value in strip_rgb[strip_y, source_x])
             preview_state[f"{target_key}_median"] = median
             preview_state[f"{target_key}_rgb"] = rgb
+            if is_line:
+                low, high = self.hsv_yellow_range_from_median(median, tolerance)
             set_target_range(target_key, low, high)
             target = self.text("yellow") if is_line else self.text("green")
             save_config(self.config_path, self.config)
@@ -1539,6 +1547,26 @@ class FishingBotGUI(tk.Tk):
         return low, high
 
     @staticmethod
+    def hsv_yellow_range_from_median(median: tuple, tolerance: int) -> tuple:
+        h_med, s_med, v_med = [int(round(value)) for value in median]
+        tolerance = max(1, int(tolerance))
+        h_pad = max(10, min(40, tolerance * 2 + 6))
+        s_low_pad = max(55, min(180, tolerance * 7 + 45))
+        s_high_pad = max(90, min(210, tolerance * 8 + 70))
+        v_low_pad = max(70, min(190, tolerance * 8 + 55))
+        low = (
+            max(0, h_med - h_pad),
+            max(0, s_med - s_low_pad),
+            max(0, v_med - v_low_pad),
+        )
+        high = (
+            min(179, h_med + h_pad),
+            min(255, s_med + s_high_pad),
+            255,
+        )
+        return low, high
+
+    @staticmethod
     def hsv_range_from_point(
         hsv: np.ndarray,
         x: int,
@@ -1605,22 +1633,9 @@ class FishingBotGUI(tk.Tk):
             return FishingBotGUI.hsv_range_from_point(hsv, x, y, radius=6, tolerance=tolerance)
 
         median = np.median(yellow, axis=0)
-        spread = np.std(yellow, axis=0)
         h_med, s_med, v_med = [int(round(value)) for value in median]
         tolerance = max(1, int(tolerance))
-        h_pad = max(5, min(28, tolerance + int(round(spread[0]))))
-        s_pad = max(35, min(150, tolerance * 3 + int(round(spread[1]))))
-        v_pad = max(35, min(165, tolerance * 3 + int(round(spread[2]))))
-        low = (
-            max(0, h_med - h_pad),
-            max(0, s_med - s_pad),
-            max(0, v_med - v_pad),
-        )
-        high = (
-            min(179, h_med + h_pad),
-            min(255, s_med + s_pad),
-            min(255, v_med + v_pad),
-        )
+        low, high = FishingBotGUI.hsv_yellow_range_from_median((h_med, s_med, v_med), tolerance)
         return low, high, (h_med, s_med, v_med)
 
     @staticmethod

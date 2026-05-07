@@ -245,6 +245,45 @@ def make_relaxed_range(
     return (low_h, low_s, low_v), (high_h, high_s, high_v)
 
 
+def yellow_line_candidate_mask(bgr: np.ndarray, hsv: np.ndarray, tolerance: int = 10) -> np.ndarray:
+    tolerance = max(1, int(tolerance))
+    b = bgr[:, :, 0].astype(np.int16)
+    g = bgr[:, :, 1].astype(np.int16)
+    r = bgr[:, :, 2].astype(np.int16)
+    h = hsv[:, :, 0].astype(np.int16)
+    s = hsv[:, :, 1].astype(np.int16)
+    v = hsv[:, :, 2].astype(np.int16)
+
+    r_min = max(125, 190 - tolerance * 4)
+    g_min = max(90, 145 - tolerance * 3)
+    rb_min = max(8, 36 - tolerance)
+    gb_min = max(0, 18 - tolerance)
+    h_low = max(0, 16 - tolerance)
+    h_high = min(60, 38 + tolerance)
+    s_min = max(20, 115 - tolerance * 5)
+    v_min = max(90, 160 - tolerance * 4)
+
+    warm_rgb = (r >= r_min) & (g >= g_min) & (r >= b + rb_min) & (g >= b + gb_min)
+    warm_hsv = (h >= h_low) & (h <= h_high) & (s >= s_min) & (v >= v_min)
+    pale_core = (
+        (r >= max(200, 245 - tolerance * 3))
+        & (g >= max(170, 215 - tolerance * 3))
+        & (b <= min(245, 205 + tolerance * 3))
+        & (r >= b + max(5, 25 - tolerance))
+        & (g >= b + max(0, 12 - tolerance))
+    )
+    orange_glow = (
+        (r >= max(145, 185 - tolerance * 3))
+        & (g >= max(70, 105 - tolerance * 2))
+        & (r >= g + max(8, 28 - tolerance))
+        & (r >= b + max(35, 70 - tolerance * 2))
+    )
+
+    mask = ((warm_rgb & warm_hsv) | pale_core | orange_glow).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 2), np.uint8))
+    return mask
+
+
 def largest_blob_center_x(mask: np.ndarray, min_area: int) -> Optional[int]:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
@@ -448,9 +487,13 @@ def turquoise_indicator_center_x(
     return best
 
 
-def yellow_line_center_x(hsv: np.ndarray, min_area: int) -> Optional[int]:
-    mask = cv2.inRange(hsv, np.array((22, 115, 145), dtype=np.uint8), np.array((38, 255, 255), dtype=np.uint8))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+def yellow_line_center_x(hsv: np.ndarray, min_area: int, bgr: Optional[np.ndarray] = None) -> Optional[int]:
+    if bgr is not None:
+        mask = yellow_line_candidate_mask(bgr, hsv, tolerance=12)
+    else:
+        mask = cv2.inRange(hsv, np.array((14, 55, 105), dtype=np.uint8), np.array((48, 255, 255), dtype=np.uint8))
+    if bgr is None:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     best = None
@@ -458,14 +501,16 @@ def yellow_line_center_x(hsv: np.ndarray, min_area: int) -> Optional[int]:
     frame_height = hsv.shape[0]
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < max(8, min_area // 4):
+        if area < max(5, min_area // 6):
             continue
         x, _y, w, h = cv2.boundingRect(contour)
-        if h < 8 or w > max(14, h):
+        if h < max(5, frame_height // 4):
+            continue
+        if w > max(18, frame_height):
             continue
         if h >= frame_height - 1:
             continue
-        score = area * (h / max(1, w))
+        score = area * (h / max(1, w)) * min(2.0, h / max(1, frame_height * 0.45))
         if score > best_score:
             best_score = score
             best = x + w // 2
@@ -813,9 +858,10 @@ def run_bot(
             fish_mask = make_mask(
                 hsv, config.fish_hsv_low, config.fish_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
-            line_mask = make_mask(
+            line_mask_hsv = make_mask(
                 hsv, config.line_hsv_low, config.line_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
+            line_mask = cv2.bitwise_or(line_mask_hsv, yellow_line_candidate_mask(bgr, hsv, tolerance=12))
             bar_mask = make_mask(
                 hsv, config.bar_hsv_low, config.bar_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
@@ -851,7 +897,7 @@ def run_bot(
                     fish_source = "shape"
 
             if line_x is None:
-                line_x = yellow_line_center_x(hsv, config.min_blob_area)
+                line_x = yellow_line_center_x(hsv, config.min_blob_area, bgr)
 
             # 优先按列信号识别（对横向条形UI更稳定）。
             if fish_x is None:
