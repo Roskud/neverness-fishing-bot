@@ -284,7 +284,13 @@ def yellow_line_candidate_mask(bgr: np.ndarray, hsv: np.ndarray, tolerance: int 
     return mask
 
 
-def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
+def vertical_line_component_mask(
+    mask: np.ndarray,
+    min_area: int,
+    bgr: Optional[np.ndarray] = None,
+    preferred_x: Optional[int] = None,
+    edge_margin: Optional[int] = None,
+) -> np.ndarray:
     frame_height, frame_width = mask.shape[:2]
     col_counts = np.count_nonzero(mask, axis=0)
     min_col_pixels = max(3, min(frame_height - 1, frame_height // 4))
@@ -293,9 +299,14 @@ def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
     if active_cols.size == 0:
         return result
 
+    if edge_margin is None:
+        edge_margin = min(max(6, frame_height // 2), max(0, frame_width // 25))
+    edge_margin = max(0, int(edge_margin))
     max_width = max(8, min(22, frame_height))
     best = None
     best_score = 0.0
+    edge_best = None
+    edge_best_score = 0.0
     start = int(active_cols[0])
     prev = int(active_cols[0])
     spans = []
@@ -329,11 +340,37 @@ def vertical_line_component_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
         if height >= frame_height - 1 and comp_width > full_height_width_limit:
             continue
         area = int(xs.size)
+        center = x1 + int(round(float(xs.mean())))
         score = area * (height / max(1, comp_width)) * min(2.0, height / max(1, frame_height * 0.45))
+        if bgr is not None:
+            roi = bgr[:, x1:x2]
+            pixels = roi[component > 0].astype(np.int16)
+            if pixels.size:
+                blue = pixels[:, 0]
+                green = pixels[:, 1]
+                red = pixels[:, 2]
+                brightness = float(np.mean(np.maximum.reduce((red, green, blue))))
+                yellow_warmth = float(np.mean(np.minimum(red, green) - blue))
+                red_only = float(np.mean(red - green))
+                score *= max(0.25, 1.0 + yellow_warmth / 42.0 + (brightness - 150.0) / 220.0)
+                if red_only > 45.0:
+                    score *= 0.35
+        if preferred_x is not None:
+            distance = abs(center - int(preferred_x))
+            score *= 1.0 / (1.0 + distance / max(18.0, frame_width * 0.04))
+
+        is_edge = center < edge_margin or center > frame_width - 1 - edge_margin
+        if is_edge:
+            if score > edge_best_score:
+                edge_best_score = score
+                edge_best = (x1, x2)
+            continue
         if score > best_score:
             best_score = score
             best = (x1, x2)
 
+    if best is None:
+        best = edge_best
     if best is None:
         return result
     x1, x2 = best
@@ -347,12 +384,35 @@ def yellow_line_component_mask(
     hsv: np.ndarray,
     tolerance: int = 10,
     min_area: int = 35,
+    preferred_x: Optional[int] = None,
+    edge_margin: Optional[int] = None,
 ) -> np.ndarray:
     raw_mask = yellow_line_candidate_mask(bgr, hsv, tolerance=tolerance)
-    return vertical_line_component_mask(raw_mask, min_area=min_area)
+    return vertical_line_component_mask(
+        raw_mask,
+        min_area=min_area,
+        bgr=bgr,
+        preferred_x=preferred_x,
+        edge_margin=edge_margin,
+    )
 
 
-def vertical_line_center_x_from_mask(mask: np.ndarray, min_area: int) -> Optional[int]:
+def vertical_line_center_x_from_mask(
+    mask: np.ndarray,
+    min_area: int,
+    bgr: Optional[np.ndarray] = None,
+    preferred_x: Optional[int] = None,
+    edge_margin: Optional[int] = None,
+) -> Optional[int]:
+    filtered = vertical_line_component_mask(
+        mask,
+        min_area=min_area,
+        bgr=bgr,
+        preferred_x=preferred_x,
+        edge_margin=edge_margin,
+    )
+    if np.count_nonzero(filtered):
+        mask = filtered
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     best_score = 0.0
@@ -1104,13 +1164,37 @@ def run_bot(
                 hsv, np.array(config.line_hsv_low, dtype=np.uint8), np.array(config.line_hsv_high, dtype=np.uint8)
             )
             line_mask_raw = cv2.morphologyEx(line_mask_raw, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
-            line_mask = vertical_line_component_mask(line_mask_raw, min_area=config.min_blob_area)
-            line_x = vertical_line_center_x_from_mask(line_mask, config.min_blob_area)
+            line_edge_margin = max(8, bgr.shape[0] // 2)
+            line_mask = vertical_line_component_mask(
+                line_mask_raw,
+                min_area=config.min_blob_area,
+                bgr=bgr,
+                preferred_x=prev_line_x,
+                edge_margin=line_edge_margin,
+            )
+            line_x = vertical_line_center_x_from_mask(
+                line_mask,
+                config.min_blob_area,
+                bgr=bgr,
+                preferred_x=prev_line_x,
+                edge_margin=line_edge_margin,
+            )
             if line_x is None:
                 fallback_line_mask = yellow_line_component_mask(
-                    bgr, hsv, tolerance=8, min_area=config.min_blob_area
+                    bgr,
+                    hsv,
+                    tolerance=8,
+                    min_area=config.min_blob_area,
+                    preferred_x=prev_line_x,
+                    edge_margin=line_edge_margin,
                 )
-                fallback_line_x = vertical_line_center_x_from_mask(fallback_line_mask, config.min_blob_area)
+                fallback_line_x = vertical_line_center_x_from_mask(
+                    fallback_line_mask,
+                    config.min_blob_area,
+                    bgr=bgr,
+                    preferred_x=prev_line_x,
+                    edge_margin=line_edge_margin,
+                )
                 if fallback_line_x is not None:
                     line_mask = fallback_line_mask
                     line_x = fallback_line_x

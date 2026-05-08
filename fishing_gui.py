@@ -1106,11 +1106,19 @@ class FishingBotGUI(tk.Tk):
             y1 = int(preview_state["strip_y1"])
             y2 = int(preview_state["strip_y2"])
             active = active_pick_var.get()
+            preferred_line_x = preview_state.get("line_click_x")
+            line_edge_margin = max(8, strip_hsv.shape[0] // 2)
             if active == "line":
                 low, high = current_range(active)
                 raw_mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
                 raw_mask = cv2.morphologyEx(raw_mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
-                mask = vertical_line_component_mask(raw_mask, min_area=self.config.min_blob_area)
+                mask = vertical_line_component_mask(
+                    raw_mask,
+                    min_area=self.config.min_blob_area,
+                    bgr=strip_bgr,
+                    preferred_x=preferred_line_x,
+                    edge_margin=line_edge_margin,
+                )
             else:
                 low, high = current_range(active)
                 mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
@@ -1136,8 +1144,20 @@ class FishingBotGUI(tk.Tk):
                 np.array(self.config.line_hsv_high, dtype=np.uint8),
             )
             line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
-            line_mask = vertical_line_component_mask(line_mask, min_area=self.config.min_blob_area)
-            line_x = vertical_line_center_x_from_mask(line_mask, self.config.min_blob_area)
+            line_mask = vertical_line_component_mask(
+                line_mask,
+                min_area=self.config.min_blob_area,
+                bgr=strip_bgr,
+                preferred_x=preferred_line_x,
+                edge_margin=line_edge_margin,
+            )
+            line_x = vertical_line_center_x_from_mask(
+                line_mask,
+                self.config.min_blob_area,
+                bgr=strip_bgr,
+                preferred_x=preferred_line_x,
+                edge_margin=line_edge_margin,
+            )
             fish_x = mask_center_x(fish_mask)
             cv2.rectangle(display, (0, y1), (display.shape[1] - 1, y2 - 1), (110, 110, 110), 1)
 
@@ -1180,6 +1200,7 @@ class FishingBotGUI(tk.Tk):
                 preview_state["strip_hsv"] = strip_hsv
                 preview_state["strip_y1"] = y1
                 preview_state["strip_y2"] = y2
+                preview_state.pop("line_click_x", None)
                 capture_info_var.set(f"{selected['left']},{selected['top']}  {selected['width']}x{selected['height']}")
                 update_sample_labels()
                 render_snapshot()
@@ -1236,6 +1257,7 @@ class FishingBotGUI(tk.Tk):
             preview_state[f"{target_key}_median"] = median
             preview_state[f"{target_key}_rgb"] = rgb
             if is_line:
+                preview_state["line_click_x"] = source_x
                 low, high = self.hsv_yellow_range_from_median(median, tolerance)
             set_target_range(target_key, low, high)
             target = self.text("yellow") if is_line else self.text("green")
