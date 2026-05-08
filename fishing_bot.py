@@ -299,6 +299,14 @@ def vertical_line_component_mask(
     if active_cols.size == 0:
         return result
 
+    if preferred_x is not None:
+        preferred_window = max(28, frame_width // 14)
+        preferred_left = max(0, int(preferred_x) - preferred_window)
+        preferred_right = min(frame_width - 1, int(preferred_x) + preferred_window)
+        preferred_cols = active_cols[(active_cols >= preferred_left) & (active_cols <= preferred_right)]
+        if preferred_cols.size:
+            active_cols = preferred_cols
+
     if edge_margin is None:
         edge_margin = min(max(6, frame_height // 2), max(0, frame_width // 25))
     edge_margin = max(0, int(edge_margin))
@@ -1031,9 +1039,10 @@ def run_bot(
     recovery_cooldown = max(1.0, config.recovery_escape_cooldown_sec)
     recovery_click_attempts_max = max(0, config.recovery_click_attempts)
     recovery_click_interval = min(1.2, max(0.7, recovery_timeout * 0.35))
-    fine_zone_px = max(config.dead_zone_px + 1, config.fine_control_zone_px)
+    control_dead_zone_px = max(6, config.dead_zone_px)
+    fine_zone_px = max(control_dead_zone_px + 1, config.fine_control_zone_px)
     fine_tap_sec = max(0.006, config.fine_tap_sec)
-    fine_tap_cooldown = max(0.0, config.fine_tap_cooldown_sec)
+    fine_tap_cooldown = max(0.025, config.fine_tap_cooldown_sec)
     last_auto_action_at = -auto_interval
     last_prompt_action_at = -prompt_cooldown
     last_prompt_seen_at = 0.0
@@ -1049,6 +1058,8 @@ def run_bot(
     has_seen_active_game = False
     recovery_clicks_done = 0
     held_control_key: Optional[str] = None
+    smoothed_fish_x: Optional[float] = None
+    smoothed_line_x: Optional[float] = None
     _ = config_path  # 纯日志模式下不再使用弹窗选区
 
     def release_control_keys() -> None:
@@ -1327,12 +1338,32 @@ def run_bot(
                 bar_lost = 0
                 prev_bar_span = bar_span
 
+            control_fish_x = None
+            control_line_x = None
+            smoothing_reset_px = max(80, config.max_x_jump * 3)
+            if fish_x is None:
+                smoothed_fish_x = None
+            elif smoothed_fish_x is None or abs(float(fish_x) - smoothed_fish_x) > smoothing_reset_px:
+                smoothed_fish_x = float(fish_x)
+            else:
+                smoothed_fish_x = smoothed_fish_x * 0.55 + float(fish_x) * 0.45
+            if line_x is None:
+                smoothed_line_x = None
+            elif smoothed_line_x is None or abs(float(line_x) - smoothed_line_x) > smoothing_reset_px:
+                smoothed_line_x = float(line_x)
+            else:
+                smoothed_line_x = smoothed_line_x * 0.45 + float(line_x) * 0.55
+            if smoothed_fish_x is not None:
+                control_fish_x = int(round(smoothed_fish_x))
+            if smoothed_line_x is not None:
+                control_line_x = int(round(smoothed_line_x))
+
             action = "HOLD"
             error = None
             key_echo = "-"
             auto_key_echo = "-"
             click_echo = "-"
-            active_game = fish_x is not None and line_x is not None
+            active_game = control_fish_x is not None and control_line_x is not None
             now = time.perf_counter()
             if active_game:
                 last_active_game_at = now
@@ -1357,48 +1388,53 @@ def run_bot(
                     )
                     last_prompt_point = prompt_point
 
-            if running and fish_x is not None and line_x is not None:
+            if running and control_fish_x is not None and control_line_x is not None:
                 left_bound = 0
                 right_bound = bgr.shape[1] - 1
                 if bar_span is not None:
                     left_bound = bar_span[0] + config.edge_margin_px
                     right_bound = bar_span[1] - config.edge_margin_px
 
-                error = fish_x - line_x
+                error = control_fish_x - control_line_x
+                hold_zone_px = max(fine_zone_px, bgr.shape[1] // 10)
+                pulse_dynamic = min(
+                    pulse_max,
+                    max(fine_tap_sec, abs(error) / max(1, bgr.shape[1]) * 0.16),
+                )
 
-                if line_x <= left_bound:
+                if control_line_x <= left_bound:
                     action = "RIGHT_EDGE_RECOVER"
                     key_echo = config.right_key.upper()
                     if config.hold_control_enabled:
                         apply_control_key(config.right_key)
                     elif not dry_run:
                         tap(config.right_key, pulse_min, input_backend)
-                elif line_x >= right_bound:
+                elif control_line_x >= right_bound:
                     action = "LEFT_EDGE_RECOVER"
                     key_echo = config.left_key.upper()
                     if config.hold_control_enabled:
                         apply_control_key(config.left_key)
                     elif not dry_run:
                         tap(config.left_key, pulse_min, input_backend)
-                elif error > config.dead_zone_px:
+                elif error > control_dead_zone_px:
                     action = "MOVE_RIGHT"
                     key_echo = config.right_key.upper()
-                    if config.hold_control_enabled and abs(error) > fine_zone_px:
+                    if config.hold_control_enabled and abs(error) > hold_zone_px:
                         apply_control_key(config.right_key)
                     else:
                         apply_control_key(None)
                         if not dry_run and now - last_fine_tap_at >= fine_tap_cooldown:
-                            tap(config.right_key, fine_tap_sec, input_backend)
+                            tap(config.right_key, pulse_dynamic, input_backend)
                             last_fine_tap_at = now
-                elif error < -config.dead_zone_px:
+                elif error < -control_dead_zone_px:
                     action = "MOVE_LEFT"
                     key_echo = config.left_key.upper()
-                    if config.hold_control_enabled and abs(error) > fine_zone_px:
+                    if config.hold_control_enabled and abs(error) > hold_zone_px:
                         apply_control_key(config.left_key)
                     else:
                         apply_control_key(None)
                         if not dry_run and now - last_fine_tap_at >= fine_tap_cooldown:
-                            tap(config.left_key, fine_tap_sec, input_backend)
+                            tap(config.left_key, pulse_dynamic, input_backend)
                             last_fine_tap_at = now
                 else:
                     action = "DEAD_ZONE_HOLD"

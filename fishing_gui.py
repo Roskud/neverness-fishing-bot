@@ -421,6 +421,7 @@ class FishingBotGUI(tk.Tk):
         self.stop_event: Optional[threading.Event] = None
         self.worker: Optional[threading.Thread] = None
         self.calibration_window: Optional[tk.Toplevel] = None
+        self.calibration_sct: Optional[mss.MSS] = None
         self.calibration_preview_image: Optional[tk.PhotoImage] = None
         self.log_queue: queue.Queue = queue.Queue()
         self.root_frame: Optional[ttk.Frame] = None
@@ -734,6 +735,7 @@ class FishingBotGUI(tk.Tk):
         if self.worker is not None and self.worker.is_alive():
             self.append_log(self.text("bot_already_running"))
             return
+        self.close_calibration_window()
         try:
             config = copy.deepcopy(self.save_current_config())
         except ValueError:
@@ -744,6 +746,7 @@ class FishingBotGUI(tk.Tk):
         self.worker.start()
         self.status_var.set(self.text("started_status"))
         self.append_log(self.text("started_log"))
+        self.after(250, self.iconify)
 
     def test_action_key(self) -> None:
         try:
@@ -850,6 +853,7 @@ class FishingBotGUI(tk.Tk):
             return
 
         sct = mss.MSS()
+        self.calibration_sct = sct
         monitor = sct.monitors[1]
         mon_left = int(monitor["left"])
         mon_top = int(monitor["top"])
@@ -1033,12 +1037,7 @@ class FishingBotGUI(tk.Tk):
             return selected
 
         def close_window() -> None:
-            try:
-                sct.close()
-            except Exception:
-                pass
-            self.calibration_window = None
-            window.destroy()
+            self.close_calibration_window()
 
         def current_range(target: str) -> tuple:
             if target == "line":
@@ -1183,7 +1182,20 @@ class FishingBotGUI(tk.Tk):
         def capture_snapshot(log: bool = False) -> None:
             try:
                 selected = apply_region(log=False)
-                shot = np.array(sct.grab(selected))
+                hidden = False
+                try:
+                    if window.winfo_exists() and window.winfo_viewable():
+                        window.withdraw()
+                        hidden = True
+                        self.update_idletasks()
+                        self.update()
+                        time.sleep(0.12)
+                    shot = np.array(sct.grab(selected))
+                finally:
+                    if hidden and window.winfo_exists():
+                        window.deiconify()
+                        window.lift()
+                        self.update_idletasks()
                 strip_rgb = cv2.cvtColor(shot, cv2.COLOR_BGRA2RGB)
                 strip_bgr = cv2.cvtColor(strip_rgb, cv2.COLOR_RGB2BGR)
                 strip_hsv = cv2.cvtColor(strip_bgr, cv2.COLOR_BGR2HSV)
@@ -1273,6 +1285,23 @@ class FishingBotGUI(tk.Tk):
 
         window.protocol("WM_DELETE_WINDOW", close_window)
         capture_snapshot(log=False)
+
+    def close_calibration_window(self) -> None:
+        window = self.calibration_window
+        self.calibration_window = None
+        sct = self.calibration_sct
+        self.calibration_sct = None
+        if sct is not None:
+            try:
+                sct.close()
+            except Exception:
+                pass
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except Exception:
+                pass
 
     def choose_click_position(self) -> None:
         if self.worker is not None and self.worker.is_alive():
@@ -1405,6 +1434,7 @@ class FishingBotGUI(tk.Tk):
                 elif kind == "stopped":
                     self.status_var.set(message)
                     self.append_log(message)
+                    self.deiconify()
         except queue.Empty:
             pass
         self.after(100, self.poll_log_queue)
@@ -1418,6 +1448,7 @@ class FishingBotGUI(tk.Tk):
     def on_close(self) -> None:
         if self.stop_event is not None:
             self.stop_event.set()
+        self.close_calibration_window()
         self.after(150, self.destroy)
 
     @staticmethod
@@ -1481,10 +1512,10 @@ class FishingBotGUI(tk.Tk):
     def hsv_yellow_range_from_median(median: tuple, tolerance: int) -> tuple:
         h_med, s_med, v_med = [int(round(value)) for value in median]
         tolerance = max(1, int(tolerance))
-        h_pad = max(10, min(40, tolerance * 2 + 6))
-        s_low_pad = max(55, min(180, tolerance * 7 + 45))
-        s_high_pad = max(90, min(210, tolerance * 8 + 70))
-        v_low_pad = max(70, min(190, tolerance * 8 + 55))
+        h_pad = max(4, min(22, tolerance + 4))
+        s_low_pad = max(30, min(150, tolerance * 5 + 20))
+        s_high_pad = max(70, min(190, tolerance * 7 + 55))
+        v_low_pad = max(35, min(170, tolerance * 6 + 30))
         low = (
             max(0, h_med - h_pad),
             max(0, s_med - s_low_pad),
