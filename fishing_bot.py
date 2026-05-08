@@ -769,6 +769,176 @@ def select_capture_region(sct: mss.MSS, fallback_region: dict) -> Optional[dict]
     }
 
 
+STRIP_MIN_HEIGHT = 12
+STRIP_MAX_HEIGHT = 48
+
+
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(value, maximum))
+
+
+def normalize_capture_strip_selection(
+    monitor: dict,
+    fallback_region: dict,
+    start: Tuple[int, int],
+    end: Tuple[int, int],
+    strip_height: Optional[int] = None,
+) -> Optional[dict]:
+    mon_left = int(monitor["left"])
+    mon_top = int(monitor["top"])
+    mon_width = int(monitor["width"])
+    mon_height = int(monitor["height"])
+
+    x1, y1 = start
+    x2, y2 = end
+    left = _clamp(min(x1, x2), 0, max(0, mon_width - 2))
+    right = _clamp(max(x1, x2), 0, mon_width)
+    width = right - left
+    if width < 8:
+        return None
+
+    fallback_height = int(fallback_region.get("height", 24))
+    drag_height = abs(y2 - y1)
+    if strip_height is None:
+        wanted_height = drag_height if drag_height >= 6 else fallback_height
+    else:
+        wanted_height = strip_height
+    height = _clamp(int(wanted_height), STRIP_MIN_HEIGHT, min(STRIP_MAX_HEIGHT, mon_height))
+
+    center_y = _clamp(int(round((y1 + y2) / 2)), 0, max(0, mon_height - 1))
+    top = _clamp(center_y - height // 2, 0, max(0, mon_height - height))
+
+    return {
+        "left": mon_left + left,
+        "top": mon_top + top,
+        "width": width,
+        "height": height,
+    }
+
+
+class LiveStripSelector:
+    def __init__(self, monitor: dict, fallback_region: dict) -> None:
+        fallback_height = int(fallback_region.get("height", 24))
+        self.strip_height = _clamp(fallback_height, STRIP_MIN_HEIGHT, STRIP_MAX_HEIGHT)
+        self.monitor = monitor
+        self.fallback_region = fallback_region
+        self.dragging = False
+        self.start: Optional[Tuple[int, int]] = None
+        self.end: Optional[Tuple[int, int]] = None
+
+    def on_mouse(self, event: int, x: int, y: int, flags: int, _param: object) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.dragging = True
+            self.start = (x, y)
+            self.end = (x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and self.dragging:
+            self.end = (x, y)
+            if self.start is not None:
+                drag_height = abs(y - self.start[1])
+                if drag_height >= 6:
+                    self.strip_height = _clamp(drag_height, STRIP_MIN_HEIGHT, STRIP_MAX_HEIGHT)
+        elif event == cv2.EVENT_LBUTTONUP and self.dragging:
+            self.dragging = False
+            self.end = (x, y)
+            if self.start is not None:
+                drag_height = abs(y - self.start[1])
+                if drag_height >= 6:
+                    self.strip_height = _clamp(drag_height, STRIP_MIN_HEIGHT, STRIP_MAX_HEIGHT)
+        elif event == cv2.EVENT_MOUSEWHEEL:
+            step = 2 if flags > 0 else -2
+            self.strip_height = _clamp(self.strip_height + step, STRIP_MIN_HEIGHT, STRIP_MAX_HEIGHT)
+
+    def current_region(self) -> Optional[dict]:
+        if self.start is None or self.end is None:
+            return None
+        return normalize_capture_strip_selection(
+            self.monitor,
+            self.fallback_region,
+            self.start,
+            self.end,
+            self.strip_height,
+        )
+
+
+def _relative_region_rect(monitor: dict, region: dict) -> Tuple[int, int, int, int]:
+    mon_width = int(monitor["width"])
+    mon_height = int(monitor["height"])
+    left = _clamp(int(region["left"] - monitor["left"]), 0, max(0, mon_width - 1))
+    top = _clamp(int(region["top"] - monitor["top"]), 0, max(0, mon_height - 1))
+    right = _clamp(left + int(region["width"]), 0, mon_width)
+    bottom = _clamp(top + int(region["height"]), 0, mon_height)
+    return left, top, right, bottom
+
+
+def select_capture_strip(sct: mss.MSS, fallback_region: dict) -> Optional[dict]:
+    monitor = sct.monitors[1]
+    selector = LiveStripSelector(monitor, fallback_region)
+    window_name = "Select Fishing Strip"
+    shot = sct.grab(monitor)
+    frame = np.array(shot)
+    base_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, int(monitor["width"]), int(monitor["height"]))
+    cv2.moveWindow(window_name, int(monitor["left"]), int(monitor["top"]))
+    cv2.setMouseCallback(window_name, selector.on_mouse)
+
+    try:
+        while True:
+            view = base_bgr.copy()
+
+            fl, ft, fr, fb = _relative_region_rect(monitor, fallback_region)
+            cv2.rectangle(view, (fl, ft), (fr, fb), (120, 120, 120), 2)
+            cv2.putText(
+                view,
+                "Drag along the minigame bar | Mouse wheel: height | ENTER/SPACE confirm | C/ESC cancel",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 255, 255),
+                2,
+            )
+
+            region = selector.current_region()
+            if region is not None:
+                l, t, r, b = _relative_region_rect(monitor, region)
+                overlay = view.copy()
+                cv2.rectangle(overlay, (l, t), (r, b), (0, 255, 255), thickness=cv2.FILLED)
+                cv2.addWeighted(overlay, 0.22, view, 0.78, 0, view)
+                cv2.rectangle(view, (l, t), (r, b), (0, 255, 255), 2)
+                cv2.line(view, (l, (t + b) // 2), (r, (t + b) // 2), (0, 255, 255), 1)
+                cv2.putText(
+                    view,
+                    f"STRIP: left={region['left']} top={region['top']} width={region['width']} height={region['height']}",
+                    (20, 72),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                )
+            else:
+                cv2.putText(
+                    view,
+                    f"Current height: {selector.strip_height}px",
+                    (20, 72),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                )
+
+            cv2.imshow(window_name, view)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (13, 32):
+                region = selector.current_region()
+                if region is not None:
+                    return region
+            if key in (27, ord("c")):
+                return None
+    finally:
+        cv2.destroyWindow(window_name)
+
+
 def run_bot(
     config: Config,
     config_path: Path,

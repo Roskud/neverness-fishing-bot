@@ -22,6 +22,7 @@ from fishing_bot import (
     run_bot,
     save_config,
     select_capture_region,
+    select_capture_strip,
     tap,
     yellow_line_candidate_mask,
     yellow_line_component_mask,
@@ -83,6 +84,7 @@ TRANSLATIONS = {
         "disable_ref": "Отключить референс",
         "capture_region": "Область захвата",
         "choose": "Выбрать",
+        "choose_strip": "Полоса",
         "click_position": "Позиция автоклика",
         "reset": "Сброс",
         "test_click": "Тест клик",
@@ -134,6 +136,7 @@ TRANSLATIONS = {
         "close": "Закрыть",
         "choose_click_running": "Сначала останови бота, потом выбери позицию клика.",
         "region_updated": "Область захвата обновлена.",
+        "strip_region_updated": "Полоса захвата обновлена.",
         "click_updated": "Позиция автоклика обновлена.",
         "click_reset": "Позиция автоклика сброшена: будет использоваться центр области F или низ справа.",
         "reference": "Референс",
@@ -208,6 +211,7 @@ TRANSLATIONS = {
         "disable_ref": "Disable reference",
         "capture_region": "Capture Region",
         "choose": "Choose",
+        "choose_strip": "Stripe",
         "click_position": "Auto Click Position",
         "reset": "Reset",
         "test_click": "Test click",
@@ -259,6 +263,7 @@ TRANSLATIONS = {
         "close": "Close",
         "choose_click_running": "Stop the bot first, then choose the click position.",
         "region_updated": "Capture region updated.",
+        "strip_region_updated": "Capture stripe updated.",
         "click_updated": "Auto click position updated.",
         "click_reset": "Auto click position reset: using F area center or lower-right default.",
         "reference": "Reference",
@@ -333,6 +338,7 @@ TRANSLATIONS = {
         "disable_ref": "禁用参考",
         "capture_region": "截图区域",
         "choose": "选择",
+        "choose_strip": "条带",
         "click_position": "自动点击位置",
         "reset": "重置",
         "test_click": "测试点击",
@@ -384,6 +390,7 @@ TRANSLATIONS = {
         "close": "关闭",
         "choose_click_running": "请先停止机器人，再选择点击位置。",
         "region_updated": "截图区域已更新。",
+        "strip_region_updated": "截图条带已更新。",
         "click_updated": "自动点击位置已更新。",
         "click_reset": "自动点击位置已重置：使用 F 区域中心或右下默认点。",
         "reference": "参考",
@@ -653,6 +660,9 @@ class FishingBotGUI(tk.Tk):
         ttk.Button(region_frame, text=self.text("auto_calibrate"), command=self.auto_calibrate_colors_from_region).pack(
             side=tk.RIGHT, padx=(10, 0)
         )
+        ttk.Button(region_frame, text=self.text("choose_strip"), command=self.choose_strip).pack(
+            side=tk.RIGHT, padx=(10, 0)
+        )
         ttk.Button(region_frame, text=self.text("choose"), command=self.choose_region).pack(
             side=tk.RIGHT, padx=(10, 0)
         )
@@ -828,6 +838,24 @@ class FishingBotGUI(tk.Tk):
         self.region_var.set(self.format_region(region))
         save_config(self.config_path, self.config)
         self.append_log(self.text("region_updated"))
+        self.auto_calibrate_colors_from_region(show_dialog=False)
+
+    def choose_strip(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            messagebox.showinfo(self.text("bot_running_title"), self.text("choose_region_running"))
+            return
+        try:
+            with mss.MSS() as sct:
+                region = select_capture_strip(sct, self.config.capture_region)
+        except Exception as exc:
+            messagebox.showerror(self.text("capture_region"), str(exc))
+            return
+        if region is None:
+            return
+        self.config.capture_region = region
+        self.region_var.set(self.format_region(region))
+        save_config(self.config_path, self.config)
+        self.append_log(self.text("strip_region_updated"))
         self.auto_calibrate_colors_from_region(show_dialog=False)
 
     def auto_calibrate_colors_from_region(self, show_dialog: bool = True) -> bool:
