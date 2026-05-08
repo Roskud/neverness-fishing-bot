@@ -352,6 +352,30 @@ def yellow_line_component_mask(
     return vertical_line_component_mask(raw_mask, min_area=min_area)
 
 
+def vertical_line_center_x_from_mask(mask: np.ndarray, min_area: int) -> Optional[int]:
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    best_score = 0.0
+    frame_height = mask.shape[0]
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < max(4, min_area // 10):
+            continue
+        x, _y, w, h = cv2.boundingRect(contour)
+        if h < max(5, frame_height // 4):
+            continue
+        if w > max(18, frame_height):
+            continue
+        full_height_width_limit = max(14, int(frame_height * 0.8))
+        if h >= frame_height - 1 and w > full_height_width_limit:
+            continue
+        score = area * (h / max(1, w)) * min(2.0, h / max(1, frame_height * 0.45))
+        if score > best_score:
+            best_score = score
+            best = x + w // 2
+    return best
+
+
 def largest_blob_center_x(mask: np.ndarray, min_area: int) -> Optional[int]:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
@@ -562,28 +586,7 @@ def yellow_line_center_x(hsv: np.ndarray, min_area: int, bgr: Optional[np.ndarra
         mask = cv2.inRange(hsv, np.array((14, 55, 105), dtype=np.uint8), np.array((48, 255, 255), dtype=np.uint8))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         mask = vertical_line_component_mask(mask, min_area=min_area)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    best = None
-    best_score = 0.0
-    frame_height = hsv.shape[0]
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < max(4, min_area // 10):
-            continue
-        x, _y, w, h = cv2.boundingRect(contour)
-        if h < max(5, frame_height // 4):
-            continue
-        if w > max(18, frame_height):
-            continue
-        full_height_width_limit = max(14, int(frame_height * 0.8))
-        if h >= frame_height - 1 and w > full_height_width_limit:
-            continue
-        score = area * (h / max(1, w)) * min(2.0, h / max(1, frame_height * 0.45))
-        if score > best_score:
-            best_score = score
-            best = x + w // 2
-    return best
+    return vertical_line_center_x_from_mask(mask, min_area)
 
 
 def detect_action_prompt(bgr: np.ndarray) -> Optional[Tuple[int, int]]:
@@ -1097,12 +1100,20 @@ def run_bot(
             fish_mask = make_mask(
                 hsv, config.fish_hsv_low, config.fish_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
-            line_mask_hsv = make_mask(
-                hsv, config.line_hsv_low, config.line_hsv_high, config.mask_open_kernel, config.mask_close_kernel
+            line_mask_raw = cv2.inRange(
+                hsv, np.array(config.line_hsv_low, dtype=np.uint8), np.array(config.line_hsv_high, dtype=np.uint8)
             )
-            line_mask_shape = yellow_line_component_mask(bgr, hsv, tolerance=12, min_area=config.min_blob_area)
-            line_mask_hsv = vertical_line_component_mask(line_mask_hsv, min_area=config.min_blob_area)
-            line_mask = cv2.bitwise_or(line_mask_hsv, line_mask_shape)
+            line_mask_raw = cv2.morphologyEx(line_mask_raw, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+            line_mask = vertical_line_component_mask(line_mask_raw, min_area=config.min_blob_area)
+            line_x = vertical_line_center_x_from_mask(line_mask, config.min_blob_area)
+            if line_x is None:
+                fallback_line_mask = yellow_line_component_mask(
+                    bgr, hsv, tolerance=8, min_area=config.min_blob_area
+                )
+                fallback_line_x = vertical_line_center_x_from_mask(fallback_line_mask, config.min_blob_area)
+                if fallback_line_x is not None:
+                    line_mask = fallback_line_mask
+                    line_x = fallback_line_x
             bar_mask = make_mask(
                 hsv, config.bar_hsv_low, config.bar_hsv_high, config.mask_open_kernel, config.mask_close_kernel
             )
@@ -1116,7 +1127,6 @@ def run_bot(
             bar_col_counts = np.count_nonzero(bar_mask, axis=0)
 
             fish_x = None
-            line_x = None
             bar_span = None
             fish_source = "none"
             min_target_width = max(24, bgr.shape[1] // 35)
@@ -1136,9 +1146,6 @@ def run_bot(
                 if shaped_fish_x is not None:
                     fish_x = shaped_fish_x
                     fish_source = "shape"
-
-            if line_x is None:
-                line_x = yellow_line_center_x(hsv, config.min_blob_area, bgr)
 
             # 优先按列信号识别（对横向条形UI更稳定）。
             if fish_x is None:

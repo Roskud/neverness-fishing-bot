@@ -24,9 +24,8 @@ from fishing_bot import (
     select_capture_region,
     select_capture_strip,
     tap,
-    yellow_line_candidate_mask,
-    yellow_line_component_mask,
-    yellow_line_center_x,
+    vertical_line_center_x_from_mask,
+    vertical_line_component_mask,
 )
 
 
@@ -44,7 +43,7 @@ TRANSLATIONS = {
         "ready_status": "Готово. Нажми Старт, когда окно игры активно.",
         "launch": "Запуск",
         "language": "Язык",
-        "simple_mode_hint": "Обычный запуск: выбери область полосы, нажми Автонастройка, потом Старт.",
+        "simple_mode_hint": "Обычный запуск: выбери Полоса, при необходимости открой Калибровка, потом Старт.",
         "show_advanced": "Показать расширенные настройки",
         "hotkeys_hint": "Горячие клавиши во время работы: F8 старт/продолжить | F9 пауза | ESC остановить",
         "start": "Старт",
@@ -130,9 +129,6 @@ TRANSLATIONS = {
         "color_pick_saved": "{target}: цвет сохранён HSV={median}, диапазон {low}-{high}.",
         "apply_region": "Сохранить область",
         "calibration_saved": "Калибровка сохранена: {region}",
-        "auto_calibrate": "Автонастройка",
-        "auto_calibrate_success": "Автонастройка цветов готова: цель {fish_low}-{fish_high}, линия {line_low}-{line_high}.",
-        "auto_calibrate_failed": "Автонастройка не нашла цель/линию. Открой мини-игру, чтобы полоска была в области захвата.",
         "close": "Закрыть",
         "choose_click_running": "Сначала останови бота, потом выбери позицию клика.",
         "region_updated": "Область захвата обновлена.",
@@ -171,7 +167,7 @@ TRANSLATIONS = {
         "ready_status": "Ready. Press Start while the game window is active.",
         "launch": "Launch",
         "language": "Language",
-        "simple_mode_hint": "Normal setup: choose the bar region, press Auto setup, then Start.",
+        "simple_mode_hint": "Normal setup: choose Stripe, calibrate if needed, then Start.",
         "show_advanced": "Show advanced settings",
         "hotkeys_hint": "Hotkeys while running: F8 start/resume | F9 pause | ESC stop",
         "start": "Start",
@@ -257,9 +253,6 @@ TRANSLATIONS = {
         "color_pick_saved": "{target}: color saved HSV={median}, range {low}-{high}.",
         "apply_region": "Save region",
         "calibration_saved": "Calibration saved: {region}",
-        "auto_calibrate": "Auto setup",
-        "auto_calibrate_success": "Color auto setup complete: target {fish_low}-{fish_high}, line {line_low}-{line_high}.",
-        "auto_calibrate_failed": "Auto setup did not find the target/line. Open the mini-game so the bar is inside the capture region.",
         "close": "Close",
         "choose_click_running": "Stop the bot first, then choose the click position.",
         "region_updated": "Capture region updated.",
@@ -298,7 +291,7 @@ TRANSLATIONS = {
         "ready_status": "准备好了。游戏窗口激活后点击开始。",
         "launch": "启动",
         "language": "语言",
-        "simple_mode_hint": "普通设置：选择横条区域，点击自动设置，然后开始。",
+        "simple_mode_hint": "普通设置：选择条带，必要时校准，然后开始。",
         "show_advanced": "显示高级设置",
         "hotkeys_hint": "运行快捷键：F8 开始/继续 | F9 暂停 | ESC 停止",
         "start": "开始",
@@ -384,9 +377,6 @@ TRANSLATIONS = {
         "color_pick_saved": "{target}: 颜色已保存 HSV={median}, 范围 {low}-{high}。",
         "apply_region": "保存区域",
         "calibration_saved": "校准已保存：{region}",
-        "auto_calibrate": "自动设置",
-        "auto_calibrate_success": "颜色自动设置完成：目标 {fish_low}-{fish_high}，线 {line_low}-{line_high}。",
-        "auto_calibrate_failed": "自动设置未找到目标/线。请打开小游戏，让横条位于截图区域内。",
         "close": "关闭",
         "choose_click_running": "请先停止机器人，再选择点击位置。",
         "region_updated": "截图区域已更新。",
@@ -657,9 +647,6 @@ class FishingBotGUI(tk.Tk):
         ttk.Button(region_frame, text=self.text("calibrate"), command=self.open_calibration_window).pack(
             side=tk.RIGHT, padx=(10, 0)
         )
-        ttk.Button(region_frame, text=self.text("auto_calibrate"), command=self.auto_calibrate_colors_from_region).pack(
-            side=tk.RIGHT, padx=(10, 0)
-        )
         ttk.Button(region_frame, text=self.text("choose_strip"), command=self.choose_strip).pack(
             side=tk.RIGHT, padx=(10, 0)
         )
@@ -677,8 +664,6 @@ class FishingBotGUI(tk.Tk):
             side=tk.RIGHT, padx=(10, 0)
         )
         ttk.Button(click_frame, text=self.text("choose"), command=self.choose_click_position).pack(side=tk.RIGHT)
-        if not self.advanced_visible_var.get():
-            click_frame.pack_forget()
 
         status_frame = ttk.LabelFrame(root, text=self.text("status"), padding=10)
         status_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
@@ -838,7 +823,6 @@ class FishingBotGUI(tk.Tk):
         self.region_var.set(self.format_region(region))
         save_config(self.config_path, self.config)
         self.append_log(self.text("region_updated"))
-        self.auto_calibrate_colors_from_region(show_dialog=False)
 
     def choose_strip(self) -> None:
         if self.worker is not None and self.worker.is_alive():
@@ -856,74 +840,6 @@ class FishingBotGUI(tk.Tk):
         self.region_var.set(self.format_region(region))
         save_config(self.config_path, self.config)
         self.append_log(self.text("strip_region_updated"))
-        self.auto_calibrate_colors_from_region(show_dialog=False)
-
-    def auto_calibrate_colors_from_region(self, show_dialog: bool = True) -> bool:
-        try:
-            with mss.MSS() as sct:
-                region = self.clamp_region(self.config.capture_region, sct.monitors[1])
-                shot = np.array(sct.grab(region))
-        except Exception as exc:
-            if show_dialog:
-                messagebox.showerror(self.text("capture_region"), str(exc))
-            self.append_log(self.text("auto_calibrate_failed"))
-            return False
-
-        bgr = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        hsv = enhance_hsv(hsv, self.config.enable_clahe)
-
-        fish_mask = cv2.inRange(hsv, np.array((68, 45, 45), dtype=np.uint8), np.array((108, 255, 255), dtype=np.uint8))
-        line_mask = cv2.inRange(hsv, np.array((14, 60, 70), dtype=np.uint8), np.array((46, 255, 255), dtype=np.uint8))
-        kernel = np.ones((3, 3), np.uint8)
-        fish_mask = cv2.morphologyEx(fish_mask, cv2.MORPH_OPEN, kernel)
-        fish_mask = cv2.morphologyEx(fish_mask, cv2.MORPH_CLOSE, kernel)
-        line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, kernel)
-
-        fish_range = self.hsv_range_from_largest_blob(
-            hsv,
-            fish_mask,
-            min_pixels=max(18, self.config.min_blob_area),
-            h_pad=7,
-            s_low_pad=38,
-            s_high_pad=28,
-            v_low_pad=45,
-            v_high_pad=35,
-        )
-        line_range = self.hsv_range_from_largest_blob(
-            hsv,
-            line_mask,
-            min_pixels=max(8, self.config.min_blob_area // 3),
-            h_pad=6,
-            s_low_pad=45,
-            s_high_pad=25,
-            v_low_pad=50,
-            v_high_pad=35,
-        )
-
-        if fish_range is None or line_range is None:
-            self.append_log(self.text("auto_calibrate_failed"))
-            if show_dialog:
-                messagebox.showinfo(self.text("capture_region"), self.text("auto_calibrate_failed"))
-            return False
-
-        self.config.fish_hsv_low, self.config.fish_hsv_high = fish_range
-        self.config.line_hsv_low, self.config.line_hsv_high = line_range
-        self.config.use_template_matching = False
-        self.template_enabled_var.set(False)
-        save_config(self.config_path, self.config)
-        self.template_status_var.set(self.format_template_status())
-        self.fish_hsv_var.set(self.format_fish_hsv())
-        message = self.text("auto_calibrate_success").format(
-            fish_low=self.config.fish_hsv_low,
-            fish_high=self.config.fish_hsv_high,
-            line_low=self.config.line_hsv_low,
-            line_high=self.config.line_hsv_high,
-        )
-        self.append_log(message)
-        if show_dialog:
-            messagebox.showinfo(self.text("capture_region"), message)
-        return True
 
     def open_calibration_window(self) -> None:
         if self.worker is not None and self.worker.is_alive():
@@ -1191,12 +1107,10 @@ class FishingBotGUI(tk.Tk):
             y2 = int(preview_state["strip_y2"])
             active = active_pick_var.get()
             if active == "line":
-                mask = yellow_line_component_mask(
-                    strip_bgr,
-                    strip_hsv,
-                    tolerance=yellow_tol_var.get(),
-                    min_area=self.config.min_blob_area,
-                )
+                low, high = current_range(active)
+                raw_mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
+                raw_mask = cv2.morphologyEx(raw_mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+                mask = vertical_line_component_mask(raw_mask, min_area=self.config.min_blob_area)
             else:
                 low, high = current_range(active)
                 mask = cv2.inRange(strip_hsv, np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8))
@@ -1216,7 +1130,14 @@ class FishingBotGUI(tk.Tk):
                 np.array(self.config.fish_hsv_low, dtype=np.uint8),
                 np.array(self.config.fish_hsv_high, dtype=np.uint8),
             )
-            line_x = yellow_line_center_x(strip_hsv, self.config.min_blob_area, strip_bgr)
+            line_mask = cv2.inRange(
+                strip_hsv,
+                np.array(self.config.line_hsv_low, dtype=np.uint8),
+                np.array(self.config.line_hsv_high, dtype=np.uint8),
+            )
+            line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+            line_mask = vertical_line_component_mask(line_mask, min_area=self.config.min_blob_area)
+            line_x = vertical_line_center_x_from_mask(line_mask, self.config.min_blob_area)
             fish_x = mask_center_x(fish_mask)
             cv2.rectangle(display, (0, y1), (display.shape[1] - 1, y2 - 1), (110, 110, 110), 1)
 
@@ -1272,11 +1193,6 @@ class FishingBotGUI(tk.Tk):
             update_range_from_tolerance(target)
             render_snapshot()
 
-        ttk.Button(
-            buttons,
-            text=self.text("auto_calibrate"),
-            command=lambda: (apply_region(), self.auto_calibrate_colors_from_region(), capture_snapshot(log=False)),
-        ).pack(side=tk.RIGHT)
         ttk.Button(buttons, text=self.text("apply_region"), command=apply_region).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(buttons, text=self.text("recapture"), command=lambda: capture_snapshot(log=True)).pack(
             side=tk.RIGHT, padx=(0, 8)
@@ -1519,47 +1435,6 @@ class FishingBotGUI(tk.Tk):
         width = max(4, min(int(region["width"]), mon_right - left))
         height = max(4, min(int(region["height"]), mon_bottom - top))
         return {"left": left, "top": top, "width": width, "height": height}
-
-    @staticmethod
-    def hsv_range_from_largest_blob(
-        hsv: np.ndarray,
-        mask: np.ndarray,
-        min_pixels: int,
-        h_pad: int,
-        s_low_pad: int,
-        s_high_pad: int,
-        v_low_pad: int,
-        v_high_pad: int,
-    ) -> Optional[tuple]:
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_mask = None
-        best_pixels = 0
-        for contour in contours:
-            contour_mask = np.zeros(mask.shape, dtype=np.uint8)
-            cv2.drawContours(contour_mask, [contour], -1, 255, thickness=cv2.FILLED)
-            pixels = int(np.count_nonzero(contour_mask))
-            if pixels > best_pixels:
-                best_pixels = pixels
-                best_mask = contour_mask
-        if best_mask is None or best_pixels < min_pixels:
-            return None
-
-        values = hsv[best_mask > 0]
-        if values.size == 0:
-            return None
-        p_low = np.percentile(values, 8, axis=0)
-        p_high = np.percentile(values, 92, axis=0)
-        low = (
-            max(0, int(round(p_low[0])) - h_pad),
-            max(0, int(round(p_low[1])) - s_low_pad),
-            max(0, int(round(p_low[2])) - v_low_pad),
-        )
-        high = (
-            min(179, int(round(p_high[0])) + h_pad),
-            min(255, int(round(p_high[1])) + s_high_pad),
-            min(255, int(round(p_high[2])) + v_high_pad),
-        )
-        return low, high
 
     @staticmethod
     def hsv_range_from_median(median: tuple, tolerance: int) -> tuple:
